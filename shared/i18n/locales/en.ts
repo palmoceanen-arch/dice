@@ -78,6 +78,7 @@ export const en = {
     settings: 'Settings',
     customDice: 'Custom Dice',
     signInYandex: 'Sign in with Yandex',
+    multiplayer: 'Multiplayer',
   },
 
   // Notifications panel tabs

@@ -80,6 +80,7 @@ export const ru: TranslationKeys = {
     settings: 'Настройки',
     customDice: 'Кастомный кубик',
     signInYandex: 'Войти через Яндекс',
+    multiplayer: 'Мультиплеер',
   },
 
   // Вкладки панели уведомлений
