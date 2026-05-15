@@ -17,6 +17,12 @@ import {
 } from './yandex/platform';
 import { cloudSave } from './yandex/cloudSave';
 import { SoloUI } from './yandex/SoloUI';
+// Bring the multiplayer stub onto window — Game.ts and a few other modules
+// look up `(window as any).wsClient` directly, so the stub must be reachable
+// the same way the real client is in the Telegram build.
+import { wsClient } from './yandex/stubs/WebSocketClient';
+
+(window as any).wsClient = wsClient;
 
 console.log(
   '%c🎲 Dice Game — Yandex Games build',

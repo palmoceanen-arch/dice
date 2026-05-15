@@ -108,6 +108,35 @@ function ensureStyles(): void {
       background: rgba(255,255,255,0.04);
       border: 1px solid rgba(255,255,255,0.08);
     }
+    .yshop-preview {
+      width: 100%; aspect-ratio: 1 / 1;
+      border-radius: 10px; margin-bottom: 4px;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);
+      overflow: hidden; position: relative;
+    }
+    .yshop-preview-dice {
+      width: 60%; aspect-ratio: 1 / 1; border-radius: 12px;
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      grid-template-rows: repeat(3, 1fr);
+      gap: 2px; padding: 8%;
+      box-sizing: border-box;
+      box-shadow:
+        inset 0 -4px 8px rgba(0,0,0,0.25),
+        inset 0 4px 8px rgba(255,255,255,0.18),
+        0 4px 10px rgba(0,0,0,0.4);
+    }
+    .yshop-preview-dot {
+      border-radius: 50%; align-self: center; justify-self: center;
+      width: 60%; height: 60%;
+    }
+    .yshop-preview-dot.invisible { visibility: hidden; }
+    .yshop-preview-table {
+      width: 100%; height: 100%; display: flex; flex-direction: column;
+    }
+    .yshop-preview-table .wall { flex: 1; }
+    .yshop-preview-table .floor { flex: 1.4; box-shadow: inset 0 6px 12px rgba(0,0,0,0.35); }
+    .yshop-preview-table .border { height: 6px; }
     .yshop-card .name { font-weight: 700; font-size: 14px; }
     .yshop-card .rarity { font-size: 12px; opacity: 0.7; text-transform: uppercase; }
     .yshop-card .desc { font-size: 12px; opacity: 0.7; min-height: 28px; }
@@ -172,8 +201,8 @@ export class SoloShop {
           <button class="yshop-close" data-action="close">×</button>
         </div>
         <div class="yshop-tabs">
-          <div class="yshop-tab ${this.currentTab === 'dice' ? 'active' : ''}" data-tab="dice">${escape(t('shop.tabs.dice') || 'Dice')}</div>
-          <div class="yshop-tab ${this.currentTab === 'tables' ? 'active' : ''}" data-tab="tables">${escape(t('shop.tabs.tables') || 'Tables')}</div>
+          <div class="yshop-tab ${this.currentTab === 'dice' ? 'active' : ''}" data-tab="dice">${escape(t('shop.dice') || 'Dice')}</div>
+          <div class="yshop-tab ${this.currentTab === 'tables' ? 'active' : ''}" data-tab="tables">${escape(t('shop.tables') || 'Tables')}</div>
         </div>
         <div class="yshop-list">
           ${items
@@ -204,12 +233,16 @@ export class SoloShop {
   private renderCard(item: CatalogItem, owned: boolean, equipped: boolean, pips: number): string {
     const canAfford = pips >= item.pipsPrice;
     const action = equipped
-      ? `<button class="yshop-btn equipped" disabled>${escape(t('shop.equipped') || 'Equipped')}</button>`
+      ? `<button class="yshop-btn equipped" disabled>${escape(t('buttons.equipped') || 'Equipped')}</button>`
       : owned
-        ? `<button class="yshop-btn primary" data-equip="${escape(item.id)}">${escape(t('shop.equip') || 'Equip')}</button>`
+        ? `<button class="yshop-btn primary" data-equip="${escape(item.id)}">${escape(t('buttons.equip') || 'Equip')}</button>`
         : `<button class="yshop-btn primary" data-buy="${escape(item.id)}" ${canAfford ? '' : 'disabled'}>${item.pipsPrice} pips</button>`;
+    const preview = item.kind === 'dice'
+      ? renderDicePreview(item.config)
+      : renderTablePreview(item.config);
     return `
       <div class="yshop-card ${escape(item.rarity)}">
+        ${preview}
         <div class="name">${escape(item.name)}</div>
         <div class="rarity">${escape(item.rarity)}</div>
         <div class="desc">${escape(item.description)}</div>
@@ -251,4 +284,48 @@ function escape(s: string): string {
   return String(s).replace(/[&<>"']/g, (c) =>
     c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;',
   );
+}
+
+function sanitizeColor(value: unknown, fallback: string): string {
+  if (typeof value !== 'string') return fallback;
+  // Only allow #RGB / #RRGGBB / rgb()/rgba() shapes — never inject arbitrary CSS.
+  if (/^#[0-9a-fA-F]{3,8}$/.test(value)) return value;
+  if (/^rgba?\([\d\s.,%]+\)$/.test(value)) return value;
+  return fallback;
+}
+
+function renderDicePreview(config: any): string {
+  const base = sanitizeColor(config?.baseColor, '#ffffff');
+  const dot = sanitizeColor(config?.dotColor, '#000000');
+  const border = sanitizeColor(config?.borderColor, base);
+  // Render the 5-face: 4 corners + center dot — recognisable as a die.
+  const dots = [true, false, true, false, true, false, true, false, true];
+  const cells = dots
+    .map(
+      (visible) =>
+        `<span class="yshop-preview-dot ${visible ? '' : 'invisible'}" style="background:${dot}"></span>`,
+    )
+    .join('');
+  return `
+    <div class="yshop-preview" style="background: radial-gradient(circle at 30% 25%, rgba(255,255,255,0.08), rgba(0,0,0,0.35));">
+      <div class="yshop-preview-dice" style="background:${base}; box-shadow: inset 0 -4px 8px rgba(0,0,0,0.25), inset 0 4px 8px rgba(255,255,255,0.18), 0 4px 10px rgba(0,0,0,0.4), 0 0 0 1px ${border};">
+        ${cells}
+      </div>
+    </div>
+  `;
+}
+
+function renderTablePreview(config: any): string {
+  const wall = sanitizeColor(config?.wall?.color, '#888888');
+  const floor = sanitizeColor(config?.floor?.color, '#1b4b02');
+  const border = sanitizeColor(config?.border?.color, '#000000');
+  return `
+    <div class="yshop-preview">
+      <div class="yshop-preview-table">
+        <div class="wall" style="background:${wall}"></div>
+        <div class="border" style="background:${border}"></div>
+        <div class="floor" style="background:${floor}"></div>
+      </div>
+    </div>
+  `;
 }
