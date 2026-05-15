@@ -2248,8 +2248,19 @@ export class Game {
     // Lock dimensions on first resize (initial load)
     // This prevents keyboard from affecting the game view
     if (this.lockedWidth === 0 || this.lockedHeight === 0) {
-      this.lockedWidth = window.innerWidth;
-      this.lockedHeight = window.innerHeight;
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      // Yandex Games sometimes mounts the iframe before it has been sized,
+      // so innerWidth/Height can be 0 on the very first resize() call. If we
+      // lock 0 here, renderer.setSize(0, 0) gives a blank canvas until a
+      // later resize event (e.g. opening DevTools) triggers another call.
+      // Defer until the iframe reports real dimensions instead.
+      if (w === 0 || h === 0) {
+        requestAnimationFrame(() => this.resize());
+        return;
+      }
+      this.lockedWidth = w;
+      this.lockedHeight = h;
     }
     
     const width = this.lockedWidth;
