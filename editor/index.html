@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dice & Table Editor</title>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Montserrat', sans-serif;
+      background: #1a1a2e;
+      color: #fff;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+    
+    #canvas-container {
+      flex: 1;
+      position: relative;
+    }
+    
+    #game-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    
+    #controls {
+      width: 340px;
+      background: #16213e;
+      padding: 20px;
+      overflow-y: auto;
+      border-left: 1px solid #0f3460;
+    }
+    
+    h2 {
+      font-size: 14px;
+      font-weight: 600;
+      margin: 20px 0 10px;
+      color: #e94560;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    
+    h2:first-child { margin-top: 0; }
+    
+    h3 {
+      font-size: 12px;
+      font-weight: 500;
+      margin: 15px 0 8px;
+      color: #667eea;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    
+    .control-group {
+      margin-bottom: 12px;
+    }
+    
+    label {
+      display: block;
+      font-size: 12px;
+      color: #aaa;
+      margin-bottom: 4px;
+    }
+    
+    input[type="color"] {
+      width: 100%;
+      height: 36px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    
+    input[type="range"] {
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: #0f3460;
+      outline: none;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #e94560;
+      cursor: pointer;
+    }
+    
+    select {
+      width: 100%;
+      padding: 8px 12px;
+      border: none;
+      border-radius: 6px;
+      background: #0f3460;
+      color: #fff;
+      font-family: inherit;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    
+    .value-display {
+      font-size: 11px;
+      color: #666;
+      text-align: right;
+      margin-top: 2px;
+    }
+    
+    button {
+      width: 100%;
+      padding: 12px;
+      margin-top: 10px;
+      border: none;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.1s, opacity 0.1s;
+    }
+    
+    button:active {
+      transform: scale(0.98);
+    }
+    
+    .btn-throw {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #fff;
+    }
+    
+    .btn-export {
+      background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+      color: #fff;
+    }
+    
+    .btn-reset {
+      background: #333;
+      color: #aaa;
+    }
+    
+    #export-output {
+      margin-top: 15px;
+      padding: 10px;
+      background: #0a0a15;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 11px;
+      color: #38ef7d;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 200px;
+      overflow-y: auto;
+      display: none;
+    }
+    
+    .copied {
+      animation: flash 0.3s;
+    }
+    
+    @keyframes flash {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    .section-divider {
+      height: 1px;
+      background: #0f3460;
+      margin: 15px 0;
+    }
+    
+    .texture-loading {
+      font-size: 11px;
+      color: #667eea;
+      margin-top: 4px;
+      animation: pulse 1.5s infinite;
+    }
+    
+    .texture-loaded {
+      font-size: 11px;
+      color: #38ef7d;
+      margin-top: 4px;
+    }
+    
+    .texture-error {
+      font-size: 11px;
+      color: #e94560;
+      margin-top: 4px;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+  </style>
+</head>
+<body>
+  <div id="canvas-container">
+    <canvas id="game-canvas"></canvas>
+  </div>
+  
+  <div id="controls">
+    <h2>🎲 Dice</h2>
+    
+    <div class="control-group">
+      <label>Load Preset</label>
+      <select id="dice-preset">
+        <option value="">— Select preset —</option>
+      </select>
+    </div>
+    
+    <div class="control-group">
+      <label>Base Color</label>
+      <input type="color" id="dice-base" value="#ffffff">
+    </div>
+    
+    <div class="control-group">
+      <label>Dot Color</label>
+      <input type="color" id="dice-dot" value="#1a1a1a">
+    </div>
+    
+    <div class="control-group">
+      <label>Border Color</label>
+      <input type="color" id="dice-border" value="#cccccc">
+    </div>
+    
+    <div class="control-group">
+      <label>Dot Size</label>
+      <input type="range" id="dice-dot-size" min="8" max="30" step="1" value="18">
+      <div class="value-display" id="dice-dot-size-val">18</div>
+    </div>
+    
+    <div class="control-group">
+      <label>Dot Shape</label>
+      <select id="dice-dot-shape">
+        <option value="circle">Circle</option>
+        <option value="square">Square</option>
+        <option value="diamond">Diamond</option>
+      </select>
+    </div>
+    
+    <div class="control-group">
+      <label>Dot Depth</label>
+      <input type="range" id="dice-dot-depth" min="0" max="2" step="0.1" value="0.7">
+      <div class="value-display" id="dice-dot-depth-val">0.7</div>
+    </div>
+    
+    <div class="control-group">
+      <label>Bevel Radius (corners)</label>
+      <input type="range" id="dice-bevel" min="0" max="0.2" step="0.01" value="0.08">
+      <div class="value-display" id="dice-bevel-val">0.08</div>
+    </div>
+    
+    <div class="control-group">
+      <label>Roughness</label>
+      <input type="range" id="dice-roughness" min="0" max="1" step="0.05" value="0.3">
+      <div class="value-display" id="dice-roughness-val">0.3</div>
+    </div>
+    
+    <div class="control-group">
+      <label>Metalness</label>
+      <input type="range" id="dice-metalness" min="0" max="1" step="0.05" value="0">
+      <div class="value-display" id="dice-metalness-val">0</div>
+    </div>
+    
+    <div class="control-group">
+      <label>Clearcoat</label>
+      <input type="range" id="dice-clearcoat" min="0" max="1" step="0.05" value="0.8">
+      <div class="value-display" id="dice-clearcoat-val">0.8</div>
+    </div>
+    
+    <div class="control-group">
+      <label>Clearcoat Roughness</label>
+      <input type="range" id="dice-clearcoat-rough" min="0" max="1" step="0.05" value="0.2">
+      <div class="value-display" id="dice-clearcoat-rough-val">0.2</div>
+    </div>
+    
+    <div class="control-group">
+      <label>Opacity</label>
+      <input type="range" id="dice-opacity" min="0" max="1" step="0.05" value="1">
+      <div class="value-display" id="dice-opacity-val">1</div>
+    </div>
+    
+    <h2>🎯 Table</h2>
+    
+    <div class="control-group">
+      <label>Load Preset</label>
+      <select id="table-preset">
+        <option value="">— Select preset —</option>
+      </select>
+    </div>
+    
+    <h3>Floor</h3>
+    
+    <div class="control-group">
+      <label>🖼️ Load Real Texture (optional)</label>
+      <select id="floor-real-texture">
+        <option value="">— Use Procedural —</option>
+      </select>
+    </div>
+    
+    <div class="control-group">
+      <label>Color</label>
+      <input type="color" id="floor-color" value="#2d5a3d">
+    </div>
+    
+    <div class="control-group">
+      <label>Procedural Texture</label>
+      <select id="floor-texture">
+        <option value="felt">Felt</option>
+        <option value="velvet">Velvet</option>
+        <option value="leather">Leather</option>
+        <option value="diamond">Diamond Pattern</option>
+        <option value="hexagon">Hexagon</option>
+        <option value="brick">Brick</option>
+        <option value="scales">Scales</option>
+        <option value="waves">Waves</option>
+        <option value="dots">Dots</option>
+        <option value="stripes">Stripes</option>
+        <option value="checker">Checker</option>
+        <option value="wood">Wood</option>
+        <option value="marble">Marble</option>
+        <option value="concrete">Concrete</option>
+        <option value="smooth">Smooth</option>
+        <option value="glass">Glass</option>
+      </select>
+    </div>
+    
+    <div class="control-group">
+      <label>Texture Scale</label>
+      <select id="floor-texture-scale">
+        <option value="small">Small (4x4)</option>
+        <option value="medium" selected>Medium (2x2)</option>
+        <option value="large">Large (1x1)</option>
+      </select>
+    </div>
+    
+    <div class="control-group">
+      <label>Roughness</label>
+      <input type="range" id="floor-roughness" min="0" max="1" step="0.05" value="0.9">
+      <div class="value-display" id="floor-roughness-val">0.9</div>
+    </div>
+    
+    <div class="control-group">
+      <label>Metalness</label>
+      <input type="range" id="floor-metalness" min="0" max="1" step="0.05" value="0">
+      <div class="value-display" id="floor-metalness-val">0</div>
+    </div>
+    
+    <div class="control-group">
+      <label>Normal Intensity</label>
+      <input type="range" id="floor-normal" min="0" max="2" step="0.1" value="0.6">
+      <div class="value-display" id="floor-normal-val">0.6</div>
+    </div>
+    
+    <div class="control-group">
+      <label>Clearcoat</label>
+      <input type="range" id="floor-clearcoat" min="0" max="1" step="0.05" value="0">
+      <div class="value-display" id="floor-clearcoat-val">0</div>
+    </div>
+    
+    <h2>🧱 Walls</h2>
+    
+    <div class="control-group">
+      <label>🖼️ Load Real Texture (optional)</label>
+      <select id="wall-real-texture">
+        <option value="">— Use Procedural —</option>
+      </select>
+    </div>
+    
+    <div class="control-group">
+      <label>Color</label>
+      <input type="color" id="wall-color" value="#1a3d2a">
+    </div>
+    
+    <div class="control-group">
+      <label>Procedural Texture</label>
+      <select id="wall-texture">
+        <option value="felt">Felt</option>
+        <option value="velvet">Velvet</option>
+        <option value="leather">Leather</option>
+        <option value="diamond">Diamond Pattern</option>
+        <option value="hexagon">Hexagon</option>
+        <option value="brick">Brick</option>
+        <option value="scales">Scales</option>
+        <option value="waves">Waves</option>
+        <option value="dots">Dots</option>
+        <option value="stripes">Stripes</option>
+        <option value="checker">Checker</option>
+        <option value="wood">Wood</option>
+        <option value="marble">Marble</option>
+        <option value="concrete">Concrete</option>
+        <option value="smooth">Smooth</option>
+        <option value="glass">Glass</option>
+      </select>
+    </div>
+    
+    <div class="control-group">
+      <label>Texture Scale</label>
+      <select id="wall-texture-scale">
+        <option value="small">Small (4x4)</option>
+        <option value="medium" selected>Medium (2x2)</option>
+        <option value="large">Large (1x1)</option>
+      </select>
+    </div>
+    
+    <div class="control-group">
+      <label>Roughness</label>
+      <input type="range" id="wall-roughness" min="0" max="1" step="0.05" value="0.95">
+      <div class="value-display" id="wall-roughness-val">0.95</div>
+    </div>
+    
+    <div class="control-group">
+      <label>Metalness</label>
+      <input type="range" id="wall-metalness" min="0" max="1" step="0.05" value="0">
+      <div class="value-display" id="wall-metalness-val">0</div>
+    </div>
+    
+    <div class="control-group">
+      <label>Normal Intensity</label>
+      <input type="range" id="wall-normal" min="0" max="2" step="0.1" value="0.6">
+      <div class="value-display" id="wall-normal-val">0.6</div>
+    </div>
+    
+    <div class="control-group">
+      <label>Clearcoat</label>
+      <input type="range" id="wall-clearcoat" min="0" max="1" step="0.05" value="0">
+      <div class="value-display" id="wall-clearcoat-val">0</div>
+    </div>
+    
+    <h2>📏 Border/Rail</h2>
+    
+    <div class="control-group">
+      <label>Color</label>
+      <input type="color" id="border-color" value="#2a2520">
+    </div>
+    
+    <div class="control-group">
+      <label>Roughness</label>
+      <input type="range" id="border-roughness" min="0" max="1" step="0.05" value="0.3">
+      <div class="value-display" id="border-roughness-val">0.3</div>
+    </div>
+    
+    <div class="control-group">
+      <label>Metalness</label>
+      <input type="range" id="border-metalness" min="0" max="1" step="0.05" value="0.6">
+      <div class="value-display" id="border-metalness-val">0.6</div>
+    </div>
+    
+    <h2>💡 Lighting</h2>
+    
+    <div class="control-group">
+      <label>Ambient Light</label>
+      <input type="range" id="light-ambient" min="0" max="2" step="0.1" value="0">
+      <div class="value-display" id="light-ambient-val">0</div>
+    </div>
+    
+    <div class="control-group">
+      <label>Spotlight</label>
+      <input type="range" id="light-spot" min="0" max="5" step="0.1" value="2.8">
+      <div class="value-display" id="light-spot-val">2.8</div>
+    </div>
+    
+    <div class="control-group">
+      <label>Directional Light</label>
+      <input type="range" id="light-directional" min="0" max="3" step="0.1" value="2.1">
+      <div class="value-display" id="light-directional-val">2.1</div>
+    </div>
+    
+    <h2>⚡ Actions</h2>
+    
+    <button class="btn-throw" id="btn-throw">🎲 Throw Dice</button>
+    <button class="btn-reset" id="btn-reset">↺ Reset to Hand</button>
+    <button class="btn-export" id="btn-export-dice">📋 Export Dice JSON</button>
+    <button class="btn-export" id="btn-export-table">📋 Export Table JSON</button>
+    
+    <div id="export-output"></div>
+  </div>
+  
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

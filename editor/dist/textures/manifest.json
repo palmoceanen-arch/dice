@@ -1,0 +1,17 @@
+[
+  {
+    "name": "concrete",
+    "displayName": "Concrete",
+    "category": "concrete"
+  },
+  {
+    "name": "oak",
+    "displayName": "Oak",
+    "category": "wood"
+  },
+  {
+    "name": "worn",
+    "displayName": "Worn",
+    "category": "wood"
+  }
+]

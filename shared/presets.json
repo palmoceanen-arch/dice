@@ -1,0 +1,501 @@
+{
+  "dice": {
+    "classic_white": {
+      "name": "Classic White",
+      "description": "Classic white dice",
+      "price": 0,
+      "rarity": "common",
+      "config": {
+        "baseColor": "#ffffff",
+        "dotColor": "#000000",
+        "borderColor": "#ffffff",
+        "roughness": 0.3,
+        "metalness": 0.25,
+        "clearcoat": 0,
+        "clearcoatRoughness": 0,
+        "dotSize": 29,
+        "dotDepth": 1.3,
+        "bevelRadius": 0.16
+      }
+    },
+    "classic_black": {
+      "name": "Classic Black",
+      "description": "Sleek black dice with white dots",
+      "price": 0,
+      "rarity": "common",
+      "config":
+      {
+        "baseColor": "#000000",
+        "dotColor": "#ffffff",
+        "borderColor": "#000000",
+        "roughness": 0.2,
+        "metalness": 0,
+        "clearcoat": 0.25,
+        "clearcoatRoughness": 0.5,
+        "dotSize": 26,
+        "dotDepth": 0.4,
+        "bevelRadius": 0.16
+      }
+    },
+    "classic_red": {
+      "name": "Classic Red",
+      "description": "Classic casino-style red dice",
+      "price": 0,
+      "rarity": "common",
+      "config": 
+      {
+        "baseColor": "#cc0000",
+        "dotColor": "#ffffff",
+        "borderColor": "#cc0000",
+        "roughness": 0.15,
+        "metalness": 0.15,
+        "clearcoat": 0.35,
+        "clearcoatRoughness": 0.05,
+        "dotSize": 27,
+        "dotDepth": 0.4,
+        "bevelRadius": 0.16
+      }
+    },
+    "charcoals": {
+      "name": "Charcoals",
+      "description": "Dark matte charcoal dice",
+      "price": 70,
+      "rarity": "uncommon",
+      "config": {
+        "baseColor": "#1a1a1a",
+        "dotColor": "#000000",
+        "borderColor": "#1a1a1a",
+        "roughness": 1,
+        "metalness": 0.8,
+        "clearcoat": 0,
+        "clearcoatRoughness": 0
+      }
+    },
+    "royal_gold": {
+      "name": "Royal Gold",
+      "description": "Luxurious golden dice",
+      "price": 150,
+      "rarity": "rare",
+      "config": {
+        "baseColor": "#ebbb0f",
+        "dotColor": "#ebbb0f",
+        "borderColor": "#ebbb0f",
+        "roughness": 0.1,
+        "metalness": 1,
+        "clearcoat": 0,
+        "clearcoatRoughness": 0,
+        "dotSize": 8,
+        "dotDepth": 2,
+        "bevelRadius": 0.06
+      }
+    },
+    "silver_chrome": {
+      "name": "Silver Chrome",
+      "description": "Polished chrome dice",
+      "price": 120,
+      "rarity": "rare",
+      "config": {
+        "baseColor": "#f7f7f7",
+        "dotColor": "#ffffff",
+        "borderColor": "#f7f7f7",
+        "roughness": 0.25,
+        "metalness": 1,
+        "clearcoat": 0,
+        "clearcoatRoughness": 0,
+        "dotSize": 11,
+        "dotDepth": 1.7,
+        "bevelRadius": 0.09
+      }
+    },
+    "rich_brown": {
+      "name": "Rich Brown",
+      "description": "Elegant metallic brown dice",
+      "price": 80,
+      "rarity": "uncommon",
+      "config": 
+      {
+        "baseColor": "#2d1f0b",
+        "dotColor": "#e6d7c1",
+        "borderColor": "#2d1f0b",
+        "roughness": 0.55,
+        "metalness": 0.85,
+        "clearcoat": 0.15,
+        "clearcoatRoughness": 0,
+        "dotSize": 25,
+        "dotDepth": 2,
+        "bevelRadius": 0.12
+      }
+    },
+    "barbie_pink": {
+      "name": "Barbie Pink",
+      "description": "Vibrant pink dice",
+      "price": 90,
+      "rarity": "uncommon",
+      "config": {
+        "baseColor": "#ff61f2",
+        "dotColor": "#f4cdf1",
+        "borderColor": "#ff61f2",
+        "roughness": 0,
+        "metalness": 0.2,
+        "clearcoat": 0.25,
+        "clearcoatRoughness": 0.05,
+        "dotSize": 26,
+        "dotDepth": 1.1,
+        "bevelRadius": 0.16
+      }
+    },
+    "cyber_black": {
+      "name": "Cyber Black",
+      "description": "Dark metallic with neon dots",
+      "price": 130,
+      "rarity": "rare",
+      "config": {
+        "baseColor": "#040005",
+        "dotColor": "#38e8ff",
+        "borderColor": "#040005",
+        "roughness": 0.75,
+        "metalness": 0.95,
+        "clearcoat": 0,
+        "clearcoatRoughness": 0,
+        "dotSize": 8,
+        "dotShape": "diamond",
+        "dotDepth": 0
+      }
+    },
+    "ocean_blue": {
+      "name": "Ocean Blue",
+      "description": "Deep blue dice like the sea",
+      "price": 75,
+      "rarity": "uncommon",
+      "config": {
+        "baseColor": "#011d41",
+        "dotColor": "#0fafff",
+        "borderColor": "#011d41",
+        "roughness": 0.1,
+        "metalness": 0.1,
+        "clearcoat": 0.35,
+        "clearcoatRoughness": 0,
+        "dotSize": 28,
+        "dotDepth": 2,
+        "bevelRadius": 0.18
+      }
+    },
+    "emerald_green": {
+      "name": "Emerald Green",
+      "description": "Rich emerald green dice",
+      "price": 100,
+      "rarity": "rare",
+      "config": {
+        "baseColor": "#50c878",
+        "dotColor": "#50c377",
+        "borderColor": "#50c878",
+        "roughness": 0.25,
+        "metalness": 1,
+        "clearcoat": 0,
+        "clearcoatRoughness": 0,
+        "opacity": 0.9,
+        "dotSize": 29,
+        "dotShape": "diamond",
+        "dotDepth": 1.6,
+        "bevelRadius": 0
+      }
+    },
+    "neon_purple": {
+      "name": "Neon Purple",
+      "description": "Vibrant purple with neon glow",
+      "price": 125,
+      "rarity": "rare",
+      "config": {
+        "baseColor": "#4a0080",
+        "dotColor": "#ff00ff",
+        "borderColor": "#4a0080",
+        "roughness": 0.15,
+        "metalness": 0.15,
+        "clearcoat": 0.25,
+        "clearcoatRoughness": 0.05,
+        "dotSize": 26,
+        "dotDepth": 2,
+        "bevelRadius": 0.14
+      }
+    },
+    "ivory_bone": {
+      "name": "Ivory Bone",
+      "description": "Antique ivory-colored dice",
+      "price": 60,
+      "rarity": "uncommon",
+      "config": {
+        "baseColor": "#d4c4a8",
+        "dotColor": "#5c4033",
+        "borderColor": "#d4c4a8",
+        "roughness": 0.85,
+        "metalness": 0.4,
+        "clearcoat": 0.1,
+        "clearcoatRoughness": 0.15,
+        "dotSize": 30,
+        "dotDepth": 2,
+        "bevelRadius": 0.18
+      }
+    },
+    "void_black": {
+      "name": "Void Black",
+      "description": "Pure darkness, absorbs all light",
+      "price": 150,
+      "rarity": "epic",
+      "config": {
+        "baseColor": "#05000a",
+        "dotColor": "#8000ff",
+        "borderColor": "#05000a",
+        "roughness": 0.2,
+        "metalness": 0.95,
+        "clearcoat": 0,
+        "clearcoatRoughness": 0,
+        "dotSize": 26,
+        "dotDepth": 2,
+        "bevelRadius": 0.13
+      }
+    },
+    "berry_red": {
+      "name": "Berry Red",
+      "description": "Sweet like berries, bold like crimson",
+      "price": 100,
+      "rarity": "rare",
+      "config": {
+        "baseColor": "#dc143c",
+        "dotColor": "#a40e2c",
+        "borderColor": "#dc143c",
+        "roughness": 0.9,
+        "metalness": 0.9,
+        "clearcoat": 0.05,
+        "clearcoatRoughness": 0.05,
+        "dotSize": 9,
+        "dotDepth": 2,
+        "bevelRadius": 0.2
+      }
+    }
+  },
+  "tables": {
+    "green_felt": {
+      "name": "Green Felt",
+      "description": "Classic green felt table",
+      "price": 0,
+      "rarity": "common",
+      "config": 
+      {
+  "floor": {
+    "color": "#1b4b02",
+    "texture": "felt",
+    "roughness": 0.85,
+    "metalness": 0.5,
+    "normalIntensity": 2,
+    "textureScale": "small",
+    "clearcoat": 0,
+    "realTexture": "fabric_velour_velvet"
+  },
+  "wall": {
+    "color": "#e0e0e0",
+    "texture": "brick",
+    "roughness": 1,
+    "metalness": 0.65,
+    "normalIntensity": 1.7,
+    "textureScale": "small",
+    "clearcoat": 0,
+    "realTexture": "concrete_concrete"
+  },
+  "border": {
+    "color": "#153b02",
+    "roughness": 0.45,
+    "metalness": 0
+  }
+}
+    },
+    "red_velvet": {
+      "name": "Red Velvet",
+      "description": "Luxurious red velvet table",
+      "price": 100,
+      "rarity": "uncommon",
+      "config": 
+{
+  "floor": {
+    "color": "#940000",
+    "texture": "felt",
+    "roughness": 0.95,
+    "metalness": 0.2,
+    "normalIntensity": 1.7,
+    "textureScale": "small",
+    "clearcoat": 0,
+    "realTexture": "fabric_velour_velvet"
+  },
+  "wall": {
+    "color": "#050505",
+    "texture": "wood",
+    "roughness": 0.65,
+    "metalness": 0.15,
+    "normalIntensity": 2,
+    "textureScale": "large",
+    "clearcoat": 0,
+    "realTexture": "concrete_beige_wall"
+  },
+  "border": {
+    "color": "#0f0000",
+    "roughness": 0.1,
+    "metalness": 0.2
+  }
+}
+    },
+    "royal_purple": {
+      "name": "Royal Purple",
+      "description": "Elegant purple velvet table",
+      "price": 150,
+      "rarity": "rare",
+      "config": 
+      {
+        "floor": {
+          "color": "#9a36dd",
+          "texture": "dots",
+          "roughness": 0.65,
+          "metalness": 0.15,
+          "normalIntensity": 0.9,
+          "textureScale": "medium",
+          "clearcoat": 0,
+          "realTexture": "metal_painted_concrete"
+        },
+        "wall": {
+          "color": "#9c5fce",
+          "texture": "concrete",
+          "roughness": 0.1,
+          "metalness": 0.15,
+          "normalIntensity": 0.6,
+          "textureScale": "small",
+          "clearcoat": 0,
+          "realTexture": "fabric_velour_velvet"
+        },
+        "border": {
+          "color": "#321858",
+          "roughness": 0.4,
+          "metalness": 0.2
+        }
+      }
+    },
+    "black_onyx": {
+      "name": "Black Onyx",
+      "description": "Sleek black table",
+      "price": 200,
+      "rarity": "rare",
+      "config": {
+        "floor": { "color": "#2e2e2e", "texture": "glass", "roughness": 0.55, "metalness": 0.5, "normalIntensity": 1.8, "textureScale": "large", "clearcoat": 0.05, "realTexture": "metal_floor_tiles" },
+        "wall": { "color": "#1f1f1f", "texture": "diamond", "roughness": 0.95, "metalness": 0.75, "normalIntensity": 1.5, "textureScale": "large", "clearcoat": 0, "realTexture": "bricks_white_sandstone" },
+        "border": { "color": "#000000", "roughness": 0.4, "metalness": 0.35 }
+      }
+    },
+    "wood_classic": {
+      "name": "Wood Classic",
+      "description": "Classic wooden table",
+      "price": 80,
+      "rarity": "uncommon",
+      "config": {
+        "floor": { "color": "#391e04", "texture": "wood", "roughness": 0, "metalness": 0.4, "normalIntensity": 0, "textureScale": "small", "clearcoat": 0.3, "realTexture": "wood_oak" },
+        "wall": { "color": "#7c6246", "texture": "leather", "roughness": 0.35, "metalness": 0.05, "normalIntensity": 1.3, "textureScale": "small", "clearcoat": 0, "realTexture": "fabric_velour_velvet" },
+        "border": { "color": "#190d01", "roughness": 0.1, "metalness": 0.2 }
+      }
+    },
+    "bedroom": {
+      "name": "Bedroom",
+      "description": "Cozy bedroom carpet",
+      "price": 60,
+      "rarity": "uncommon",
+      "config": {
+        "floor": { "color": "#5f4e30", "texture": "felt", "roughness": 0.9, "metalness": 0.75, "normalIntensity": 2, "textureScale": "small", "clearcoat": 0, "realTexture": "fabric_velour_velvet" },
+        "wall": { "color": "#787754", "texture": "leather", "roughness": 0.35, "metalness": 0.05, "normalIntensity": 0.5, "textureScale": "small", "clearcoat": 0, "realTexture": "fabric_velour_velvet" },
+        "border": { "color": "#ddd497", "roughness": 0.25, "metalness": 0.85 }
+      }
+    },
+    "bar": {
+      "name": "Bar",
+      "description": "Classic bar counter",
+      "price": 140,
+      "rarity": "rare",
+      "config": {
+        "floor": { "color": "#b8ac94", "texture": "wood", "roughness": 0.5, "metalness": 0.3, "normalIntensity": 1.7, "textureScale": "large", "clearcoat": 0.35, "realTexture": "wood_oak" },
+        "wall": { "color": "#5a5958", "texture": "brick", "roughness": 0.8, "metalness": 0.45, "normalIntensity": 1.5, "textureScale": "large", "clearcoat": 0, "realTexture": "bricks_dark_brick_wall" },
+        "border": { "color": "#110b03", "roughness": 0.65, "metalness": 0.4 }
+      }
+    },
+    "warm_wood": {
+      "name": "Warm Wood",
+      "description": "Cozy wooden table with brick walls",
+      "price": 120,
+      "rarity": "rare",
+      "config": {
+        "floor": { "color": "#ab713b", "texture": "felt", "roughness": 0.85, "metalness": 0.4, "normalIntensity": 0.8, "textureScale": "large", "clearcoat": 0.55, "realTexture": "wood_worn" },
+        "wall": { "color": "#decac0", "texture": "brick", "roughness": 0.85, "metalness": 0.25, "normalIntensity": 0.6, "textureScale": "large", "clearcoat": 0.25, "realTexture": "bricks_brick_wall" },
+        "border": { "color": "#d7c8b7", "roughness": 0.85, "metalness": 0.5 }
+      }
+    },
+    "forest_table": {
+      "name": "Forest Table",
+      "description": "Deep green velvet with oak walls",
+      "price": 140,
+      "rarity": "rare",
+      "config": {
+        "floor": { "color": "#35654d", "texture": "felt", "roughness": 0.9, "metalness": 1, "normalIntensity": 1.5, "textureScale": "small", "clearcoat": 0, "realTexture": "fabric_velour_velvet" },
+        "wall": { "color": "#3c2f2f", "texture": "brick", "roughness": 0.5, "metalness": 0.05, "normalIntensity": 1.6, "textureScale": "small", "clearcoat": 0.25, "realTexture": "wood_oak" },
+        "border": { "color": "#35654d", "roughness": 0.45, "metalness": 0.9 }
+      }
+    },
+    "oak_table": {
+      "name": "Oak Table",
+      "description": "Natural oak wood table",
+      "price": 180,
+      "rarity": "rare",
+      "config": {
+        "floor": { "color": "#ffffff", "texture": "wood", "roughness": 0.5, "metalness": 0.25, "normalIntensity": 1.6, "textureScale": "medium", "clearcoat": 0.25, "realTexture": "wood_oak" },
+        "wall": { "color": "#e8ddd0", "texture": "brick", "roughness": 0.65, "metalness": 0.45, "normalIntensity": 1.8, "textureScale": "large", "clearcoat": 0.2, "realTexture": "bricks_brick_wall" },
+        "border": { "color": "#4c3115", "roughness": 0.3, "metalness": 0.1 }
+      }
+    },
+    "outside": {
+      "name": "Outside",
+      "description": "Sandy outdoor surface",
+      "price": 160,
+      "rarity": "rare",
+      "config": {
+        "floor": { "color": "#f5e6d3", "texture": "concrete", "roughness": 0.95, "metalness": 0.5, "normalIntensity": 0.3, "textureScale": "medium", "clearcoat": 0, "realTexture": "sand_coast_sand" },
+        "wall": { "color": "#8a7a6a", "texture": "concrete", "roughness": 0.95, "metalness": 0.85, "normalIntensity": 1.4, "textureScale": "large", "clearcoat": 0, "realTexture": "bricks_brick_wall_02" },
+        "border": { "color": "#312317", "roughness": 0.65, "metalness": 0.05 }
+      }
+    },
+    "street_game": {
+      "name": "Street Game",
+      "description": "Urban asphalt street table",
+      "price": 200,
+      "rarity": "rare",
+      "config": {
+        "floor": { "color": "#6a6a6a", "texture": "felt", "roughness": 0.85, "metalness": 0.9, "normalIntensity": 1.2, "textureScale": "medium", "clearcoat": 0, "realTexture": "asphalt_asphalt" },
+        "wall": { "color": "#b0b0b0", "texture": "felt", "roughness": 0.6, "metalness": 0.6, "normalIntensity": 1.6, "textureScale": "medium", "clearcoat": 0.75, "realTexture": "concrete_concrete" },
+        "border": { "color": "#1a1a1a", "roughness": 0.9, "metalness": 0.8 }
+      }
+    },
+    "grandfathers_table": {
+      "name": "Grandfather's Table",
+      "description": "Weathered wood with memories",
+      "price": 220,
+      "rarity": "rare",
+      "config": {
+        "floor": { "color": "#d4c4a8", "texture": "felt", "roughness": 0.65, "metalness": 1, "normalIntensity": 1.6, "textureScale": "medium", "clearcoat": 0.2, "realTexture": "wood_weathered" },
+        "wall": { "color": "#c8c8c8", "texture": "felt", "roughness": 0.25, "metalness": 0.35, "normalIntensity": 1, "textureScale": "large", "clearcoat": 0.25, "realTexture": "concrete_concrete" },
+        "border": { "color": "#140d00", "roughness": 0.7, "metalness": 0.55 }
+      }
+    },
+    "garage_table": {
+      "name": "Garage Table",
+      "description": "Worn wood workbench",
+      "price": 190,
+      "rarity": "rare",
+      "config": {
+        "floor": { "color": "#a89070", "texture": "felt", "roughness": 0.6, "metalness": 0.75, "normalIntensity": 0.7, "textureScale": "medium", "clearcoat": 0.35, "realTexture": "wood_worn" },
+        "wall": { "color": "#9a9a9a", "texture": "felt", "roughness": 1, "metalness": 0.5, "normalIntensity": 1.3, "textureScale": "large", "clearcoat": 0, "realTexture": "concrete_concrete" },
+        "border": { "color": "#141414", "roughness": 0.7, "metalness": 0.55 }
+      }
+    }
+  }
+}

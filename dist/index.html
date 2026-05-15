@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>Dice Game</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Alfa+Slab+One&family=Montserrat:wght@400;500;600;700&display=swap">
+  <link href="https://fonts.googleapis.com/css2?family=Alfa+Slab+One&family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Boosts Update v1.0 -->
+  <script type="module" crossorigin src="/assets/index-AKCTbsdO-1770310226000.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-zWKV7_Wi-1770310226001.css">
+</head>
+<body>
+  <div id="app">
+    <canvas id="canvas"></canvas>
+    <div id="boost-icon">
+      <svg width="36" height="36" viewBox="0 0 24 24">
+        <defs>
+          <linearGradient id="goldGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:#FFD700;stop-opacity:1" />
+            <stop offset="100%" style="stop-color:#FFA500;stop-opacity:1" />
+          </linearGradient>
+        </defs>
+        <path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z" fill="url(#goldGradient)"/>
+      </svg>
+    </div>
+    <div id="ui">
+      <div id="result"></div>
+      <div id="hint"></div>
+      <button id="permission-btn" style="display:none; pointer-events:auto; margin-top:15px; padding:12px 24px; font-size:16px; border:none; border-radius:20px; background:#4CAF50; color:white; cursor:pointer; font-family: 'Montserrat', sans-serif;">
+        Allow motion sensors
+      </button>
+    </div>
+  </div>
+</body>
+</html>

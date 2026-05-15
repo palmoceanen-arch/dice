@@ -1,0 +1,58 @@
+# Caddyfile для Street Dice
+# Положи этот файл в /etc/caddy/Caddyfile на VPS
+
+street-dice.online {
+    # Автоматический HTTPS от Let's Encrypt
+    
+    # Корневая директория для статических файлов
+    root * /path/to/app/dist
+    
+    # WebSocket для игры (важно чтобы было первым!)
+    @websocket {
+        path /ws
+        header Connection *Upgrade*
+        header Upgrade websocket
+    }
+    reverse_proxy @websocket localhost:3001
+    
+    # API endpoints (метрики, вебхуки, админка)
+    @api {
+        path /telegram/* /health /metrics /metrics/json /admin/*
+    }
+    reverse_proxy @api localhost:3000 {
+        # Передаем реальный IP клиента
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+    
+    # Статические файлы (HTML, JS, CSS, звуки)
+    # Сначала пробуем найти файл, если нет - отдаем index.html (для SPA)
+    try_files {path} /index.html
+    file_server
+    
+    # Заголовки для кеширования
+    @static {
+        path *.js *.css *.png *.jpg *.gif *.svg *.ico *.mp3 *.wav
+    }
+    header @static Cache-Control "public, max-age=31536000, immutable"
+    
+    # HTML без кеша (чтобы всегда загружалась новая версия)
+    @html {
+        path *.html /
+    }
+    header @html Cache-Control "no-cache, no-store, must-revalidate"
+    header @html Pragma "no-cache"
+    header @html Expires "0"
+    
+    # Логи (опционально)
+    log {
+        output file /var/log/caddy/street-dice.log
+        format json
+    }
+}
+
+# Если хочешь чтобы www тоже работал
+www.street-dice.online {
+    redir https://street-dice.online{uri} permanent
+}

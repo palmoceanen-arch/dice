@@ -1,0 +1,46 @@
+=== КАК ДОБАВИТЬ ТЕКСТУРЫ ===
+
+1. Скачай текстуру с Poly Haven
+2. Переименуй файлы:
+   - texturename_color.jpg
+   - texturename_normal.jpg
+   - texturename_roughness.jpg
+
+3. Создай папку (если нужно) и размести файлы:
+   editor/public/textures/[любое_имя]/
+   
+   Примеры папок: fabric, stone, wood, metal, concrete, marble, etc.
+
+4. Запусти сканирование:
+   cd editor
+   npm run scan-textures
+
+5. Пересобери редактор:
+   npm run build
+
+6. Готово! Текстура появится в списке автоматически
+
+=== ПРИМЕР ===
+
+Файлы:
+  editor/public/textures/concrete/
+    concrete_color.jpg
+    concrete_normal.jpg
+    concrete_roughness.jpg
+
+Команды:
+  cd editor
+  npm run scan-textures
+  npm run build
+
+Результат:
+  ✓ "Concrete" появится в списке в категории "Concrete"
+
+=== ВАЖНО ===
+
+- Имена файлов должны быть с суффиксами: _color, _normal, _roughness
+- Минимум нужны 3 файла: color, normal, roughness
+- Опционально: _metalness, _ao
+- Формат: .jpg (или .png)
+- Можно создавать ЛЮБЫЕ папки - скрипт найдёт их автоматически!
+- После добавления файлов ОБЯЗАТЕЛЬНО запусти npm run scan-textures

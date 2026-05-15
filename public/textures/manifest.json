@@ -1,0 +1,102 @@
+[
+  {
+    "name": "asphalt",
+    "displayName": "Asphalt",
+    "category": "asphalt"
+  },
+  {
+    "name": "brick_wall_02",
+    "displayName": "Brick Wall 02",
+    "category": "bricks"
+  },
+  {
+    "name": "brick_wall",
+    "displayName": "Brick Wall",
+    "category": "bricks"
+  },
+  {
+    "name": "dark_brick_wall",
+    "displayName": "Dark Brick Wall",
+    "category": "bricks"
+  },
+  {
+    "name": "plaster_brick_pattern",
+    "displayName": "Plaster Brick Pattern",
+    "category": "bricks"
+  },
+  {
+    "name": "white_sandstone",
+    "displayName": "White Sandstone",
+    "category": "bricks"
+  },
+  {
+    "name": "beige_wall",
+    "displayName": "Beige Wall",
+    "category": "concrete"
+  },
+  {
+    "name": "concrete",
+    "displayName": "Concrete",
+    "category": "concrete"
+  },
+  {
+    "name": "velour_velvet",
+    "displayName": "Velour Velvet",
+    "category": "fabric"
+  },
+  {
+    "name": "blue_metal",
+    "displayName": "Blue Metal",
+    "category": "metal"
+  },
+  {
+    "name": "floor_tiles",
+    "displayName": "Floor Tiles",
+    "category": "metal"
+  },
+  {
+    "name": "granite",
+    "displayName": "Granite",
+    "category": "metal"
+  },
+  {
+    "name": "painted_concrete",
+    "displayName": "Painted Concrete",
+    "category": "metal"
+  },
+  {
+    "name": "rock_tile",
+    "displayName": "Rock Tile",
+    "category": "metal"
+  },
+  {
+    "name": "rusty_metal",
+    "displayName": "Rusty Metal",
+    "category": "metal"
+  },
+  {
+    "name": "rusty_metal_sheet",
+    "displayName": "Rusty Metal Sheet",
+    "category": "metal"
+  },
+  {
+    "name": "coast_sand",
+    "displayName": "Coast Sand",
+    "category": "sand"
+  },
+  {
+    "name": "oak",
+    "displayName": "Oak",
+    "category": "wood"
+  },
+  {
+    "name": "weathered",
+    "displayName": "Weathered",
+    "category": "wood"
+  },
+  {
+    "name": "worn",
+    "displayName": "Worn",
+    "category": "wood"
+  }
+]
