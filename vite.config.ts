@@ -35,6 +35,12 @@ const yandexAliases = [
 ];
 
 export default defineConfig({
+  // Yandex Games serves the game from a versioned subpath
+  // (e.g. /games/_crpd/<hash>/<token>/<token>/), so absolute /assets/*
+  // paths 404. Use relative paths for the Yandex bundle. The Telegram
+  // bundle keeps absolute paths because it's served from the root of
+  // its own static host.
+  base: IS_YANDEX ? './' : '/',
   plugins: process.env.USE_SSL ? [basicSsl()] : [],
   resolve: IS_YANDEX ? { alias: yandexAliases } : undefined,
   server: {

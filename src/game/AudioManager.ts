@@ -21,9 +21,12 @@ export class AudioManager {
       await this.createAudioContext();
       
       // Load sounds
+      // Use Vite's BASE_URL so the bundle works both at the root of a host
+      // (Telegram) and inside Yandex Games' versioned subpath.
+      const base = import.meta.env.BASE_URL;
       const [diceResp, tableResp] = await Promise.all([
-        fetch('/sounds/dice_hit.mp3'),
-        fetch('/sounds/table_hit.mp3')
+        fetch(`${base}sounds/dice_hit.mp3`),
+        fetch(`${base}sounds/table_hit.mp3`)
       ]);
       
       if (!diceResp.ok || !tableResp.ok) {

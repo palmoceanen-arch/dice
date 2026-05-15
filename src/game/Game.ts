@@ -858,7 +858,10 @@ export class Game {
     
     const category = parts[0];
     const name = parts.slice(1).join('_');
-    const basePath = `/textures/${category}/${name}`;
+    // Use Vite's BASE_URL so the bundle works both at the root of a host
+    // (Telegram) and inside Yandex Games' versioned subpath
+    // (/games/_crpd/<hash>/...).
+    const basePath = `${import.meta.env.BASE_URL}textures/${category}/${name}`;
     
     const loader = new THREE.TextureLoader();
     
