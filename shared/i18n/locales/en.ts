@@ -81,6 +81,22 @@ export const en = {
     multiplayer: 'Multiplayer',
   },
 
+  // Multiplayer lobby (Yandex Games build)
+  multiplayer: {
+    title: 'Multiplayer',
+    createLobby: 'Create lobby',
+    joinByCode: 'Join by code',
+    help: 'Invite friends by sharing the 8-character lobby code. Winner gets pips — no real-money bets.',
+    join: 'Join',
+    connecting: 'Connecting…',
+    host: 'host',
+    you: 'you',
+    start: 'Start match',
+    waitingHost: 'Waiting for host to start…',
+    copy: 'Copy code',
+    leave: 'Leave',
+  },
+
   // Notifications panel tabs
   notifPanel: {
     invites: 'Invites',
