@@ -16,6 +16,7 @@ import { cloudSave } from './cloudSave';
 import { SoloShop } from './SoloShop';
 import { SoloInventory } from './SoloInventory';
 import { DiceEditorModal } from '../ui/DiceEditorModal';
+import { MultiplayerLobbyUI } from './MultiplayerLobbyUI';
 import { haptic, isPlayerAuthorized, openAuthDialog } from './platform';
 import { getCurrentLanguage, setLanguage, onLanguageChange, t } from '../../shared/i18n';
 import type { Language } from '../../shared/i18n';
@@ -130,6 +131,7 @@ export class SoloUI {
   private menuEl!: HTMLElement;
   private menuButton!: HTMLElement;
   private settingsOverlay: HTMLElement | null = null;
+  private multiplayer: MultiplayerLobbyUI | null = null;
 
   constructor(game: Game) {
     this.game = game;
@@ -139,6 +141,22 @@ export class SoloUI {
       onOpenShopKeys: () => this.shop.openTab('keys'),
     });
     cloudSave.onCustomDiceChange(() => this.onInventoryChanged());
+  }
+
+  private isMultiplayerEnabled(): boolean {
+    // Mirrors the same check main.yandex.ts uses to decide whether to
+    // open the live WebSocket connection. Until VITE_WS_URL is configured
+    // for the build (street-dice.online) we hide the menu item.
+    const url = (import.meta as any).env?.VITE_WS_URL ?? '';
+    return typeof url === 'string' && url.length > 0;
+  }
+
+  private openMultiplayer(): void {
+    if (!this.multiplayer) {
+      this.multiplayer = new MultiplayerLobbyUI();
+      this.multiplayer.mount();
+    }
+    this.multiplayer.open();
   }
 
   mount(): void {
@@ -181,8 +199,14 @@ export class SoloUI {
       { label: t('shop.title') || 'Shop', action: () => this.openShop() },
       { label: t('inventory.title') || 'Inventory', action: () => this.openInventory() },
       { label: t('menu.customDice') || 'Custom Dice', action: () => this.openDiceEditor() },
-      { label: t('settings.title') || 'Settings', action: () => this.openSettings() },
     ];
+    if (this.isMultiplayerEnabled()) {
+      items.push({
+        label: t('menu.multiplayer') || 'Multiplayer',
+        action: () => this.openMultiplayer(),
+      });
+    }
+    items.push({ label: t('settings.title') || 'Settings', action: () => this.openSettings() });
     if (!isPlayerAuthorized()) {
       items.push({
         label: t('menu.signInYandex') || 'Sign in with Yandex',

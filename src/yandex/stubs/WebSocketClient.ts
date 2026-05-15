@@ -63,10 +63,7 @@ export interface InventoryItem {
 
 type Listener = (data: any) => void;
 
-const WS_URL: string =
-  (import.meta as any).env?.VITE_WS_URL ??
-  (typeof process !== 'undefined' ? process.env?.VITE_WS_URL : '') ??
-  '';
+const WS_URL: string = (import.meta as any).env?.VITE_WS_URL ?? '';
 
 // === Offline solo stub ===
 class StubWebSocketClient {

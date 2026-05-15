@@ -62,10 +62,7 @@ document.body.addEventListener(
   { passive: false },
 );
 
-const WS_URL: string =
-  (import.meta as any).env?.VITE_WS_URL ??
-  (typeof process !== 'undefined' ? process.env?.VITE_WS_URL : '') ??
-  '';
+const WS_URL: string = (import.meta as any).env?.VITE_WS_URL ?? '';
 
 (async () => {
   const { player } = await initYandexPlatform();
