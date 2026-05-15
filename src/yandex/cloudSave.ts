@@ -18,6 +18,7 @@ import presets from '../../shared/presets.json';
 const LS_INVENTORY_KEY = 'yandex.inventory';
 const LS_SETTINGS_KEY = 'yandex.settings';
 const LS_CUSTOM_PRESETS_KEY = 'yandex.customPresets';
+const LS_CUSTOM_DICE_KEY = 'yandex.customDice';
 const LS_STATS_KEY = 'yandex.stats';
 
 const DATA_FLUSH_DELAY_MS = 1000;
@@ -28,6 +29,7 @@ export interface Inventory {
   ownedTableIds: string[];
   equippedDiceId: string;
   equippedTableId: string;
+  designKeys: number;
 }
 
 export interface Settings {
@@ -84,6 +86,7 @@ function defaultInventory(): Inventory {
     ownedTableIds: tables,
     equippedDiceId: owned[0] ?? 'classic_white',
     equippedTableId: tables[0] ?? 'classic_green',
+    designKeys: 0,
   };
 }
 
@@ -104,6 +107,11 @@ class CloudSaveManager {
   private settings: Settings = defaultSettings();
   private stats: Stats = defaultStats();
   private customPresets: CustomPresetMap = {};
+  // The player's currently-saved custom dice config. When non-null this
+  // overrides the equipped preset's config (matches the Telegram flow that
+  // uses localStorage.customDiceConfig).
+  private customDice: any | null = null;
+  private customDiceListeners = new Set<() => void>();
 
   private dataFlushTimer: number | null = null;
   private statsFlushTimer: number | null = null;
@@ -118,6 +126,12 @@ class CloudSaveManager {
     this.settings = loadFromLocal(LS_SETTINGS_KEY, defaultSettings());
     this.stats = loadFromLocal(LS_STATS_KEY, defaultStats());
     this.customPresets = loadFromLocal(LS_CUSTOM_PRESETS_KEY, {});
+    try {
+      const raw = localStorage.getItem(LS_CUSTOM_DICE_KEY);
+      this.customDice = raw ? JSON.parse(raw) : null;
+    } catch {
+      this.customDice = null;
+    }
 
     const player = getPlayer();
     if (!player) {
@@ -149,6 +163,14 @@ class CloudSaveManager {
         if (data.customPresets) {
           this.customPresets = { ...this.customPresets, ...(data.customPresets as CustomPresetMap) };
           saveToLocal(LS_CUSTOM_PRESETS_KEY, this.customPresets);
+        }
+        if (data.customDice !== undefined) {
+          this.customDice = (data.customDice as any) || null;
+          if (this.customDice) {
+            saveToLocal(LS_CUSTOM_DICE_KEY, this.customDice);
+          } else {
+            try { localStorage.removeItem(LS_CUSTOM_DICE_KEY); } catch {}
+          }
         }
       }
 
@@ -191,9 +213,35 @@ class CloudSaveManager {
     return this.customPresets;
   }
 
+  getDesignKeys(): number {
+    return Math.max(0, this.inventory.designKeys | 0);
+  }
+
+  getCustomDiceConfig(): any | null {
+    return this.customDice;
+  }
+
+  hasCustomDice(): boolean {
+    return this.customDice != null;
+  }
+
+  onCustomDiceChange(cb: () => void): () => void {
+    this.customDiceListeners.add(cb);
+    return () => this.customDiceListeners.delete(cb);
+  }
+
+  private notifyCustomDiceChange(): void {
+    this.customDiceListeners.forEach((cb) => {
+      try { cb(); } catch (e) { console.warn('[cloud] custom-dice listener threw', e); }
+    });
+  }
+
   // --- equipped item helpers (mirrors the WebSocketClient API used by Game.ts) ---
 
   getEquippedDiceConfig(): any | null {
+    // A saved custom dice config always takes priority — it matches the
+    // Telegram build's localStorage.customDiceConfig behaviour.
+    if (this.customDice) return this.customDice;
     const id = this.inventory.equippedDiceId;
     if (!id) return null;
     const entry = (presets as any).dice?.[id];
@@ -277,6 +325,37 @@ class CloudSaveManager {
     return true;
   }
 
+  async purchaseDesignKey(price: number): Promise<boolean> {
+    if (!(await this.spendPips(price))) return false;
+    this.inventory.designKeys = this.getDesignKeys() + 1;
+    saveToLocal(LS_INVENTORY_KEY, this.inventory);
+    this.queueData();
+    return true;
+  }
+
+  consumeDesignKey(): boolean {
+    const current = this.getDesignKeys();
+    if (current <= 0) return false;
+    this.inventory.designKeys = current - 1;
+    saveToLocal(LS_INVENTORY_KEY, this.inventory);
+    this.queueData();
+    return true;
+  }
+
+  async saveCustomDice(config: any): Promise<void> {
+    this.customDice = config;
+    saveToLocal(LS_CUSTOM_DICE_KEY, config);
+    this.queueData();
+    this.notifyCustomDiceChange();
+  }
+
+  async clearCustomDice(): Promise<void> {
+    this.customDice = null;
+    try { localStorage.removeItem(LS_CUSTOM_DICE_KEY); } catch {}
+    this.queueData();
+    this.notifyCustomDiceChange();
+  }
+
   async updateSettings(patch: Partial<Settings>): Promise<void> {
     this.settings = { ...this.settings, ...patch };
     saveToLocal(LS_SETTINGS_KEY, this.settings);
@@ -321,6 +400,7 @@ class CloudSaveManager {
           inventory: this.inventory,
           settings: this.settings,
           customPresets: this.customPresets,
+          customDice: this.customDice,
         },
         false,
       );

@@ -3,13 +3,19 @@
 // friends/lobbies, Telegram-specific share flows, etc.
 //
 // Responsibilities:
-//   * Top-left menu button → small menu with Shop, Settings.
+//   * Top-left menu button → small menu with Shop, Inventory, Custom
+//     Dice, Settings.
 //   * Top-right pips balance (kept in sync with cloudSave).
 //   * Settings: graphics quality, sound volume, language.
+//   * Custom Dice opens the shared DiceEditorModal that already exists
+//     in the Telegram UI. The wsClient stub bridges its key/save calls
+//     into the cloud save layer.
 
 import type { Game } from '../game/Game';
 import { cloudSave } from './cloudSave';
 import { SoloShop } from './SoloShop';
+import { SoloInventory } from './SoloInventory';
+import { DiceEditorModal } from '../ui/DiceEditorModal';
 import { haptic, isPlayerAuthorized, openAuthDialog } from './platform';
 import { getCurrentLanguage, setLanguage, onLanguageChange, t } from '../../shared/i18n';
 import type { Language } from '../../shared/i18n';
@@ -85,6 +91,27 @@ function ensureStyles(): void {
     }
     .yui-btn.primary { background: #ffd84d; color: #1a1a1a; }
     .yui-btn.ghost { background: rgba(255,255,255,0.08); color: #fff; }
+
+    /* Styles below are re-exported from MultiplayerUI for the shared
+       DiceEditorModal, which the Yandex solo build opens directly. */
+    .mp-confirm-overlay {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.7);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 200; pointer-events: auto;
+    }
+    .mp-confirm-dialog {
+      background: rgba(30,30,30,0.95);
+      border-radius: 12px; padding: 20px; max-width: 280px;
+      text-align: center;
+      font-family: 'Montserrat', system-ui, sans-serif; color: #fff;
+    }
+    .mp-btn {
+      padding: 10px 14px; border-radius: 8px; border: 0;
+      cursor: pointer; font-weight: 700; font-size: 14px;
+      font-family: 'Montserrat', system-ui, sans-serif;
+    }
+    .mp-btn.secondary { background: rgba(255,255,255,0.2); color: #fff; }
   `;
   document.head.appendChild(style);
 }
@@ -98,6 +125,7 @@ const ICON_MENU = `
 export class SoloUI {
   private game: Game;
   private shop: SoloShop;
+  private inventory: SoloInventory;
   private balanceEl!: HTMLElement;
   private menuEl!: HTMLElement;
   private menuButton!: HTMLElement;
@@ -106,6 +134,11 @@ export class SoloUI {
   constructor(game: Game) {
     this.game = game;
     this.shop = new SoloShop(() => this.onInventoryChanged());
+    this.inventory = new SoloInventory({
+      onChange: () => this.onInventoryChanged(),
+      onOpenShopKeys: () => this.shop.openTab('keys'),
+    });
+    cloudSave.onCustomDiceChange(() => this.onInventoryChanged());
   }
 
   mount(): void {
@@ -146,11 +179,13 @@ export class SoloUI {
   private renderMenu(): void {
     const items: Array<{ label: string; action: () => void }> = [
       { label: t('shop.title') || 'Shop', action: () => this.openShop() },
+      { label: t('inventory.title') || 'Inventory', action: () => this.openInventory() },
+      { label: t('menu.customDice') || 'Custom Dice', action: () => this.openDiceEditor() },
       { label: t('settings.title') || 'Settings', action: () => this.openSettings() },
     ];
     if (!isPlayerAuthorized()) {
       items.push({
-        label: 'Sign in with Yandex',
+        label: t('menu.signInYandex') || 'Sign in with Yandex',
         action: () => this.signIn(),
       });
     }
@@ -171,6 +206,14 @@ export class SoloUI {
 
   private openShop(): void {
     this.shop.open();
+  }
+
+  private openInventory(): void {
+    this.inventory.open();
+  }
+
+  private openDiceEditor(): void {
+    DiceEditorModal.toggle(this.game);
   }
 
   private async signIn(): Promise<void> {

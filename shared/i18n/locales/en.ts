@@ -76,6 +76,8 @@ export const en = {
     inventory: 'Inventory',
     shop: 'Shop',
     settings: 'Settings',
+    customDice: 'Custom Dice',
+    signInYandex: 'Sign in with Yandex',
   },
 
   // Notifications panel tabs
@@ -170,9 +172,18 @@ export const en = {
     dice: 'Dice',
     tables: 'Tables',
     effects: 'Effects',
+    keys: 'Design Keys',
+    customDice: 'Custom Dice',
     noDice: 'No dice yet',
     noTables: 'No tables yet',
     noEffects: 'No effects yet',
+    noKeys: 'No keys yet — buy one in the shop',
+    noCustomDice: 'You haven\'t saved a custom dice yet',
+    keysOwned: '{count} key(s)',
+    customDiceSaved: 'Saved custom dice',
+    equip: 'Equip',
+    useCustom: 'Use custom',
+    clearCustom: 'Reset to equipped',
   },
 
   // Shop
@@ -181,17 +192,22 @@ export const en = {
     dice: 'Dice',
     tables: 'Tables',
     effects: 'Effects',
+    keys: 'Design Keys',
     stars: 'stars',
     owned: 'Owned',
     loading: 'Loading...',
     noDiceAvailable: 'No dice available',
     noTablesAvailable: 'No tables available',
     noEffectsAvailable: 'No effects available',
+    noKeysAvailable: 'No keys available',
     buyFor: 'Buy for',
     youOwnThis: 'You own this item',
     preview: 'Preview',
     previewing: 'Previewing: {item}',
     close: 'Close',
+    locked: 'Locked',
+    notEnoughPips: 'Not enough pips',
+    bought: 'Bought!',
   },
 
   // Settings
@@ -421,6 +437,7 @@ First player to reach 200 or more points wins!`,
   
   // Dice Editor
   diceEditor: {
+    title: 'Custom Dice',
     appearance: 'Appearance',
     pips: 'Pips',
     material: 'Material',
@@ -438,6 +455,14 @@ First player to reach 200 or more points wins!`,
     clearcoat: 'Clearcoat',
     clearcoatRoughness: 'Clearcoat Roughness',
     opacity: 'Opacity',
+    noKey: 'No Design Key',
+    noKeyHint: 'You need a Design Key to save a custom dice.',
+    buyKey: 'Buy in shop',
+    useKey: 'Use Design Key?',
+    useKeyHint: 'This will save your custom dice permanently.',
+    keysRemaining: 'You have {count} key(s) remaining.',
+    saved: 'Custom dice saved!',
+    saving: 'Saving custom dice...',
   },
 
   // Betting

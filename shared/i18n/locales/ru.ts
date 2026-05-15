@@ -78,6 +78,8 @@ export const ru: TranslationKeys = {
     inventory: 'Инвентарь',
     shop: 'Магазин',
     settings: 'Настройки',
+    customDice: 'Кастомный кубик',
+    signInYandex: 'Войти через Яндекс',
   },
 
   // Вкладки панели уведомлений
@@ -172,9 +174,18 @@ export const ru: TranslationKeys = {
     dice: 'Кости',
     tables: 'Столы',
     effects: 'Эффекты',
+    keys: 'Ключи дизайнера',
+    customDice: 'Кастомные кубики',
     noDice: 'Пока нет костей',
     noTables: 'Пока нет столов',
     noEffects: 'Пока нет эффектов',
+    noKeys: 'Ключей пока нет — купи в магазине',
+    noCustomDice: 'Ты ещё не сохранил свой кубик',
+    keysOwned: '{count} шт.',
+    customDiceSaved: 'Сохранённый кубик',
+    equip: 'Надеть',
+    useCustom: 'Применить',
+    clearCustom: 'Вернуть стандартный',
   },
 
   // Магазин
@@ -183,17 +194,22 @@ export const ru: TranslationKeys = {
     dice: 'Кости',
     tables: 'Столы',
     effects: 'Эффекты',
+    keys: 'Ключи дизайнера',
     stars: 'звёзд',
     owned: 'Куплено',
     loading: 'Загрузка...',
     noDiceAvailable: 'Нет доступных костей',
     noTablesAvailable: 'Нет доступных столов',
     noEffectsAvailable: 'Нет доступных эффектов',
+    noKeysAvailable: 'Нет доступных ключей',
     buyFor: 'Купить за',
     youOwnThis: 'У вас есть этот предмет',
     preview: 'Просмотр',
     previewing: 'Просмотр: {item}',
     close: 'Закрыть',
+    locked: 'Заблокировано',
+    notEnoughPips: 'Недостаточно pips',
+    bought: 'Куплено!',
   },
 
   // Настройки
@@ -423,6 +439,7 @@ export const ru: TranslationKeys = {
   
   // Редактор кубиков
   diceEditor: {
+    title: 'Кастомный кубик',
     appearance: 'Внешний вид',
     pips: 'Точки',
     material: 'Материал',
@@ -440,6 +457,14 @@ export const ru: TranslationKeys = {
     clearcoat: 'Лак',
     clearcoatRoughness: 'Шероховатость лака',
     opacity: 'Прозрачность',
+    noKey: 'Нет ключа дизайнера',
+    noKeyHint: 'Для сохранения кубика нужен ключ дизайнера.',
+    buyKey: 'Купить в магазине',
+    useKey: 'Использовать ключ?',
+    useKeyHint: 'Кубик будет сохранён навсегда.',
+    keysRemaining: 'У тебя осталось {count} ключ(ей).',
+    saved: 'Кубик сохранён!',
+    saving: 'Сохраняем кубик...',
   },
 
   // Ставки

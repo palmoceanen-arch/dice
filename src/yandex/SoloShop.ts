@@ -1,9 +1,11 @@
 // In-game shop for the Yandex Games build. Everything is bought with
 // `pips` (the in-game currency) — there is no real-money purchase flow.
 //
-// The catalog comes from `shared/presets.json`. Items with a Telegram-Stars
-// `price` of 0 are free (the player starts with all of them); everything
-// else costs `price * PIPS_PER_STAR` pips on Yandex.
+// The catalog comes from `shared/presets.json` for dice and tables; the
+// design-key catalog mirrors server/add-keys.js (the same keys the
+// Telegram build sells, just denominated in pips). Items with a
+// Telegram-Stars `price` of 0 are free (the player starts with all of
+// them); everything else costs `price * PIPS_PER_STAR` pips on Yandex.
 
 import presets from '../../shared/presets.json';
 import { cloudSave } from './cloudSave';
@@ -11,6 +13,51 @@ import { t } from '../../shared/i18n';
 import { haptic } from './platform';
 
 const PIPS_PER_STAR = 100;
+
+// Design-key catalogue. Pricing intentionally matches
+// server/add-keys.js: Design (5k), Creator (15k locked), Unusual (30k
+// locked). The two premium tiers stay locked behind moderation — they
+// give us a hook for future Yandex-side promotions without surprising
+// players in the soft launch.
+interface KeyEntry {
+  id: string;
+  name: string;
+  description: string;
+  rarity: 'common' | 'uncommon' | 'rare' | 'epic';
+  pipsPrice: number;
+  color: string;
+  locked: boolean;
+}
+
+const DESIGN_KEYS: KeyEntry[] = [
+  {
+    id: 'design_key',
+    name: 'Design Key',
+    description: 'Save your custom dice design permanently',
+    rarity: 'common',
+    pipsPrice: 5000,
+    color: '#4A90E2',
+    locked: false,
+  },
+  {
+    id: 'creators_key',
+    name: "Creator's Key",
+    description: 'Premium key for master designers',
+    rarity: 'rare',
+    pipsPrice: 15000,
+    color: '#E74C3C',
+    locked: true,
+  },
+  {
+    id: 'unusual_key',
+    name: 'Unusual Key',
+    description: 'Legendary key for elite creators',
+    rarity: 'epic',
+    pipsPrice: 30000,
+    color: '#9B59B6',
+    locked: true,
+  },
+];
 
 type PresetEntry = {
   name: string;
@@ -152,17 +199,45 @@ function ensureStyles(): void {
     .yshop-card.rare { border-color: rgba(180, 130, 255, 0.4); }
     .yshop-card.epic { border-color: rgba(255, 200, 80, 0.5); }
     .yshop-card.uncommon { border-color: rgba(100, 180, 255, 0.35); }
+    .yshop-preview-key {
+      width: 64%; aspect-ratio: 1 / 1; border-radius: 18px;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow:
+        inset 0 -4px 10px rgba(0,0,0,0.35),
+        inset 0 4px 10px rgba(255,255,255,0.2),
+        0 6px 14px rgba(0,0,0,0.5);
+    }
+    .yshop-key-icon { font-size: 36px; line-height: 1; }
+    .yshop-card-badge {
+      position: absolute; top: 8px; right: 8px;
+      background: #4caf50; color: #fff; padding: 2px 8px;
+      border-radius: 999px; font-weight: 700; font-size: 12px;
+      z-index: 2;
+    }
+    .yshop-card-lock {
+      position: absolute; top: 8px; left: 8px;
+      background: rgba(0,0,0,0.6); color: #fff; padding: 2px 8px;
+      border-radius: 999px; font-weight: 700; font-size: 12px;
+      z-index: 2;
+    }
   `;
   document.head.appendChild(style);
 }
 
+type ShopTab = 'dice' | 'tables' | 'keys';
+
 export class SoloShop {
   private overlay: HTMLElement | null = null;
-  private currentTab: 'dice' | 'tables' = 'dice';
+  private currentTab: ShopTab = 'dice';
   private onChange: () => void;
 
   constructor(onChange: () => void) {
     this.onChange = onChange;
+  }
+
+  openTab(tab: ShopTab): void {
+    this.currentTab = tab;
+    this.open();
   }
 
   open(): void {
@@ -185,13 +260,22 @@ export class SoloShop {
   private render(): void {
     if (!this.overlay) return;
     const stats = cloudSave.getStats();
-    const items = buildCatalog(this.currentTab);
-    const inventory = cloudSave.getInventory();
-    const ownedSet = new Set(
-      this.currentTab === 'dice' ? inventory.ownedDiceIds : inventory.ownedTableIds,
-    );
-    const equippedId =
-      this.currentTab === 'dice' ? inventory.equippedDiceId : inventory.equippedTableId;
+
+    let body: string;
+    if (this.currentTab === 'keys') {
+      body = this.renderKeysTab(stats.pips);
+    } else {
+      const items = buildCatalog(this.currentTab);
+      const inventory = cloudSave.getInventory();
+      const ownedSet = new Set(
+        this.currentTab === 'dice' ? inventory.ownedDiceIds : inventory.ownedTableIds,
+      );
+      const equippedId =
+        this.currentTab === 'dice' ? inventory.equippedDiceId : inventory.equippedTableId;
+      body = items
+        .map((item) => this.renderCard(item, ownedSet.has(item.id), item.id === equippedId, stats.pips))
+        .join('');
+    }
 
     this.overlay.innerHTML = `
       <div class="yshop-panel">
@@ -203,18 +287,15 @@ export class SoloShop {
         <div class="yshop-tabs">
           <div class="yshop-tab ${this.currentTab === 'dice' ? 'active' : ''}" data-tab="dice">${escape(t('shop.dice') || 'Dice')}</div>
           <div class="yshop-tab ${this.currentTab === 'tables' ? 'active' : ''}" data-tab="tables">${escape(t('shop.tables') || 'Tables')}</div>
+          <div class="yshop-tab ${this.currentTab === 'keys' ? 'active' : ''}" data-tab="keys">${escape(t('shop.keys') || 'Keys')}</div>
         </div>
-        <div class="yshop-list">
-          ${items
-            .map((item) => this.renderCard(item, ownedSet.has(item.id), item.id === equippedId, stats.pips))
-            .join('')}
-        </div>
+        <div class="yshop-list">${body}</div>
       </div>
     `;
 
     this.overlay.querySelectorAll('[data-tab]').forEach((el) => {
       el.addEventListener('click', () => {
-        const tab = (el as HTMLElement).dataset.tab as 'dice' | 'tables';
+        const tab = (el as HTMLElement).dataset.tab as ShopTab;
         this.currentTab = tab;
         this.render();
       });
@@ -228,6 +309,66 @@ export class SoloShop {
     this.overlay.querySelectorAll('[data-equip]').forEach((el) => {
       el.addEventListener('click', () => this.equip((el as HTMLElement).dataset.equip!));
     });
+    this.overlay.querySelectorAll('[data-buy-key]').forEach((el) => {
+      el.addEventListener('click', () => this.buyKey((el as HTMLElement).dataset.buyKey!));
+    });
+  }
+
+  private renderKeysTab(pips: number): string {
+    const owned = cloudSave.getDesignKeys();
+    return DESIGN_KEYS.map((key) => {
+      const canAfford = pips >= key.pipsPrice;
+      let action: string;
+      if (key.locked) {
+        action = `<button class="yshop-btn secondary" disabled>${escape(t('shop.locked') || 'Locked')}</button>`;
+      } else {
+        action = `<button class="yshop-btn primary" data-buy-key="${escape(key.id)}" ${canAfford ? '' : 'disabled'}>${key.pipsPrice.toLocaleString('en-US')} pips</button>`;
+      }
+      const ownedBadge = key.id === 'design_key' && owned > 0
+        ? `<div class="yshop-card-badge">${owned}×</div>`
+        : '';
+      const lockedIcon = key.locked
+        ? `<div class="yshop-card-lock">—</div>`
+        : '';
+      return `
+        <div class="yshop-card ${escape(key.rarity)}" style="position:relative;">
+          ${ownedBadge}${lockedIcon}
+          <div class="yshop-preview" style="background: radial-gradient(circle at 30% 25%, rgba(255,255,255,0.08), rgba(0,0,0,0.35));">
+            <div class="yshop-preview-key" style="background:${escape(key.color)};">
+              <span class="yshop-key-icon">🔑</span>
+            </div>
+          </div>
+          <div class="name">${escape(key.name)}</div>
+          <div class="rarity">${escape(key.rarity)}</div>
+          <div class="desc">${escape(key.description)}</div>
+          <div class="actions">${action}</div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  private async buyKey(id: string): Promise<void> {
+    const key = DESIGN_KEYS.find((k) => k.id === id);
+    if (!key) return;
+    if (key.locked) {
+      haptic.warning();
+      return;
+    }
+    if (key.id !== 'design_key') {
+      // Premium keys are display-only for now — they unlock with future
+      // gameplay milestones, not via the shop button.
+      haptic.warning();
+      return;
+    }
+    const ok = await cloudSave.purchaseDesignKey(key.pipsPrice);
+    if (ok) {
+      haptic.success();
+      this.onChange();
+      this.render();
+    } else {
+      haptic.warning();
+      this.render();
+    }
   }
 
   private renderCard(item: CatalogItem, owned: boolean, equipped: boolean, pips: number): string {
@@ -252,12 +393,15 @@ export class SoloShop {
   }
 
   private async buy(id: string): Promise<void> {
-    const items = buildCatalog(this.currentTab);
+    if (this.currentTab === 'keys') return;
+    const kind: 'dice' | 'tables' = this.currentTab;
+    const items = buildCatalog(kind);
     const item = items.find((i) => i.id === id);
     if (!item) return;
-    const ok = this.currentTab === 'dice'
-      ? await cloudSave.purchaseDice(id, item.pipsPrice)
-      : await cloudSave.purchaseTable(id, item.pipsPrice);
+    const ok =
+      kind === 'dice'
+        ? await cloudSave.purchaseDice(id, item.pipsPrice)
+        : await cloudSave.purchaseTable(id, item.pipsPrice);
     if (ok) {
       haptic.success();
       // Equip immediately for convenience.
@@ -269,6 +413,7 @@ export class SoloShop {
   }
 
   private async equip(id: string): Promise<void> {
+    if (this.currentTab === 'keys') return;
     if (this.currentTab === 'dice') {
       await cloudSave.equipDice(id);
     } else {
