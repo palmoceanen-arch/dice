@@ -22,6 +22,7 @@ import { loadYandexAuth } from './yandex/yandexAuth';
 // look up `(window as any).wsClient` directly, so the stub must be reachable
 // the same way the real client is in the Telegram build.
 import { wsClient } from './yandex/stubs/WebSocketClient';
+import { ConnectionErrorBanner } from './yandex/ConnectionErrorBanner';
 
 (window as any).wsClient = wsClient;
 
@@ -76,8 +77,32 @@ const WS_URL: string = (import.meta as any).env?.VITE_WS_URL ?? '';
   // Kick off the live WebSocket connection if multiplayer is enabled for
   // this build (VITE_WS_URL set, e.g. wss://street-dice.online/ws).
   if (WS_URL && typeof (wsClient as any).connect === 'function') {
+    // Surface connection failures to the player. Yandex Games
+    // moderation requires an informative error + a retry / fallback
+    // action whenever we reach out to a custom host.
+    const connBanner = new ConnectionErrorBanner({
+      onRetry: () => (wsClient as any).connect?.(),
+    });
+    connBanner.mount();
+    (window as any).connBanner = connBanner;
+
+    if (typeof (wsClient as any).on === 'function') {
+      (wsClient as any).on(
+        'connection_health_changed',
+        (payload: { health: 'good' | 'unstable' | 'poor' | 'offline' }) => {
+          connBanner.onConnectionHealthChanged(payload?.health ?? 'offline');
+        },
+      );
+      (wsClient as any).on('max_reconnect_attempts', () => {
+        connBanner.onConnectionHealthChanged('offline');
+      });
+    }
+
     (wsClient as any).connect().catch((e: unknown) => {
       console.warn('[main.yandex] initial WS connect failed (will auto-retry)', e);
+      // onerror already emits connection_health_changed; this catch is
+      // just a safety net so an unhandled rejection doesn't bubble up.
+      connBanner.onConnectionHealthChanged('offline');
     });
   }
 
