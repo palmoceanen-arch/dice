@@ -92,6 +92,12 @@ export interface Lobby {
   status: LobbyStatus;
   selectedTableId: number | null;
   maxPlayers: number;
+  // When true, the lobby is "no-bet": the in-round BettingManager flow
+  // is skipped and the winner(s) receive a fixed pip prize at game end.
+  // Used by the Yandex Games build where real-money / pip-stake betting
+  // is not allowed by the portal's compliance rules. Defaults to false
+  // (classic Telegram behaviour).
+  noBet: boolean;
   createdAt: Date;
   startedAt: Date | null;
   finishedAt: Date | null;

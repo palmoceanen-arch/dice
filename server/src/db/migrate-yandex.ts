@@ -40,6 +40,11 @@ const migrations = [
          CHECK (telegram_id IS NOT NULL OR yandex_id IS NOT NULL);
      END IF;
    END$$`,
+
+  // Per-lobby "no betting" flag. Yandex Games lobbies are created with
+  // no_bet=true so the in-round BettingManager flow is bypassed and the
+  // game-end payout is a fixed pip reward to the winner(s).
+  `ALTER TABLE lobbies ADD COLUMN IF NOT EXISTS no_bet BOOLEAN NOT NULL DEFAULT FALSE`,
 ];
 
 async function migrate() {

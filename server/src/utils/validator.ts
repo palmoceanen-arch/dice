@@ -91,6 +91,10 @@ const CreateLobbySchema = z.object({
   gameMode: GameModeSchema,
   screenWidth: z.number().int().positive().max(10000).optional(),
   screenHeight: z.number().int().positive().max(10000).optional(),
+  // Set by the Yandex Games build so the in-round BettingManager flow is
+  // skipped and the game-end payout becomes a fixed pip prize for the
+  // winner(s). Defaults to false for backwards compatibility (Telegram).
+  noBet: z.boolean().optional(),
 });
 
 const JoinLobbySchema = z.object({

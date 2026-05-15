@@ -243,10 +243,15 @@ export async function getRolls(lobbyId: string, limit = 50): Promise<{
   }));
 }
 
+// Fixed pip prize awarded to each winner in a no-bet lobby. Kept small so
+// the Yandex Games path can't be used as an unbounded pip farm by abusing
+// trivially-winnable lobbies; tune in one place if needed.
+const NO_BET_WINNER_PIPS = 100;
+
 export async function endGame(lobbyId: string): Promise<Map<number, number> | null> {
   const state = activeGames.get(lobbyId);
   let payouts: Map<number, number> | null = null;
-  
+
   // Resolve bets if betting is active
   if (state && BettingManager.isActive(lobbyId)) {
     const handler = getGameMode(state.gameMode);
@@ -258,6 +263,27 @@ export async function endGame(lobbyId: string): Promise<Map<number, number> | nu
       }
     }
     BettingManager.cleanup(lobbyId);
+  } else if (state && lobby.isNoBetLobby(lobbyId)) {
+    // No-bet lobby (Yandex Games): no in-round pot to resolve. Award a
+    // fixed pip prize to every winner reported by the mode handler.
+    const handler = getGameMode(state.gameMode);
+    if (handler) {
+      const winners = handler.getWinners(state);
+      if (winners.length > 0) {
+        payouts = new Map();
+        for (const winnerId of winners) {
+          try {
+            await query(
+              'UPDATE users SET pips = pips + $1 WHERE id = $2',
+              [NO_BET_WINNER_PIPS, winnerId],
+            );
+            payouts.set(winnerId, NO_BET_WINNER_PIPS);
+          } catch (err) {
+            console.error('[no-bet] failed to award pips', { lobbyId, winnerId, err });
+          }
+        }
+      }
+    }
   }
   
   // Increment games played for all players (for referral tracking)

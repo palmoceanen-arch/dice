@@ -157,22 +157,27 @@ function escapeHtml(s: string): string {
   });
 }
 
+// Display labels match the codebase's shared i18n catalog
+// (shared/i18n/locales/*.ts). `poker_dice` is rendered as "Palmo's Dice"
+// because the server's `poker_dice` registration points at the Palmo's
+// Dice mode handler (palmosDice.ts → name: 'poker_dice'). Players win a
+// fixed pip prize at game-end — no betting on the Yandex Games build.
 const MODE_LABELS: Record<GameMode, { name: string; sub: string }> = {
-  street_craps: {
+  poker_dice: {
     name: "Palmo's Dice",
-    sub: '2–4 players · fixed pips to winner',
+    sub: '2–4 players · winner gets fixed pips',
+  },
+  street_craps: {
+    name: 'Street Craps',
+    sub: '2–4 players · classic street craps',
   },
   mexico: {
     name: 'Mexico',
-    sub: '2–4 players · classic Mexico rules',
+    sub: '2–4 players · winner gets fixed pips',
   },
   greedy_pig: {
     name: 'Greedy Pig',
-    sub: '2–4 players · push-your-luck',
-  },
-  poker_dice: {
-    name: 'Poker Dice',
-    sub: '2–4 players · best 5-dice hand wins',
+    sub: '2–4 players · winner gets fixed pips',
   },
 };
 
@@ -432,7 +437,10 @@ export class MultiplayerLobbyUI {
   }
 
   private renderCreate(): void {
-    const modes: GameMode[] = ['street_craps', 'poker_dice', 'mexico', 'greedy_pig'];
+    // Palmo's Dice first — it's the flagship mode the user asked for in
+    // the Yandex Games build (and the one with a clear winner concept
+    // wired through `getWinners`, so the fixed-pip payout always fires).
+    const modes: GameMode[] = ['poker_dice', 'mexico', 'greedy_pig', 'street_craps'];
     const cards = modes
       .map(
         (m) => `
