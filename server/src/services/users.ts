@@ -109,21 +109,35 @@ export async function findOrCreateYandexUser(player: YandexPlayer): Promise<User
   );
   const isNewUser = existingUser.rows.length === 0;
 
-  const result = await query<User>(
-    `INSERT INTO users (yandex_id, platform, nickname, first_name, avatar_url, last_online)
-     VALUES ($1, 'yandex', $2, $3, $4, NOW())
-     ON CONFLICT (yandex_id) DO UPDATE SET
-       last_online = NOW(),
-       first_name = EXCLUDED.first_name,
-       avatar_url = EXCLUDED.avatar_url
-     RETURNING *`,
-    [
-      player.uuid,
-      isNewUser ? await generateNickname(displayName) : displayName,
-      displayName,
-      avatarUrl,
-    ]
-  );
+  // `users.yandex_id` is guarded by a *partial* unique index
+  // (`WHERE yandex_id IS NOT NULL`), so `ON CONFLICT (yandex_id)` alone
+  // doesn't match a constraint. We need to either specify the predicate
+  // in the ON CONFLICT clause or split the upsert. We split it because
+  // it's simpler and avoids relying on the partial-index conflict syntax.
+  let result;
+  if (isNewUser) {
+    result = await query<User>(
+      `INSERT INTO users (yandex_id, platform, nickname, first_name, avatar_url, last_online)
+       VALUES ($1, 'yandex', $2, $3, $4, NOW())
+       RETURNING *`,
+      [
+        player.uuid,
+        await generateNickname(displayName),
+        displayName,
+        avatarUrl,
+      ]
+    );
+  } else {
+    result = await query<User>(
+      `UPDATE users
+         SET last_online = NOW(),
+             first_name = $2,
+             avatar_url = $3
+       WHERE yandex_id = $1
+       RETURNING *`,
+      [player.uuid, displayName, avatarUrl]
+    );
+  }
 
   const user = mapUser(result.rows[0]);
 
