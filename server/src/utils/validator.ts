@@ -24,10 +24,44 @@ const UsernameSearchSchema = SafeString
 
 // === Message schemas ===
 
-const AuthMessageSchema = z.object({
-  type: z.literal('auth'),
-  initData: z.string().min(1).max(4096),
+// Telegram path: `initData` is the Telegram Mini App init payload.
+// Yandex path: `platform: 'yandex'` plus `signedData` (HMAC payload from
+// `ysdk.getPlayer({signed:true})`) and optional `playerInfo`. The dispatch
+// in handlers.ts picks the right path based on `platform`; this schema
+// must accept either shape, otherwise valid Yandex auth messages are
+// rejected before they reach the dispatcher.
+const YandexAuthPlayerInfoSchema = z.object({
+  uuid: z.string().min(1).max(128).optional(),
+  publicName: z.string().max(256).optional(),
+  avatarUrlSmall: z.string().max(2048).optional(),
+  avatarUrlMedium: z.string().max(2048).optional(),
+  avatarUrlLarge: z.string().max(2048).optional(),
+  lang: z.string().max(16).optional(),
 });
+
+const AuthMessageSchema = z
+  .object({
+    type: z.literal('auth'),
+    platform: z.enum(['telegram', 'yandex']).optional(),
+    initData: z.string().min(1).max(4096).optional(),
+    signedData: z.string().min(1).max(8192).nullable().optional(),
+    playerInfo: YandexAuthPlayerInfoSchema.nullable().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.platform === 'yandex') {
+      // Yandex auth doesn't require initData; signedData may be null for
+      // unauthorized guests, the server falls back to a per-device uuid in
+      // dev / rejects in prod.
+      return;
+    }
+    if (!data.initData) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['initData'],
+        message: 'Required',
+      });
+    }
+  });
 
 const SetNicknameSchema = z.object({
   type: z.literal('set_nickname'),
