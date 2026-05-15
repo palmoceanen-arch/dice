@@ -259,9 +259,14 @@ export async function getUserPips(userId: number): Promise<number> {
 // Map database row to User type (snake_case to camelCase)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mapUser(row: any): User {
+  const platform = (row.platform as string | null) === 'yandex' ? 'yandex' : 'telegram';
   return {
     id: row.id as number,
-    telegramId: row.telegram_id as number,
+    telegramId: row.telegram_id === null || row.telegram_id === undefined
+      ? null
+      : (row.telegram_id as number),
+    yandexId: (row.yandex_id as string | null) ?? null,
+    platform,
     nickname: row.nickname as string,
     telegramUsername: row.telegram_username as string | null,
     firstName: row.first_name as string | null,

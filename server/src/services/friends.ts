@@ -65,6 +65,8 @@ export async function getFriends(userId: number): Promise<FriendWithUser[]> {
       user: {
         id: row.friend_user_id,
         telegramId: row.friend_telegram_id,
+        yandexId: null,
+        platform: 'telegram',
         nickname: row.friend_nickname,
         telegramUsername: row.friend_telegram_username,
         firstName: row.friend_first_name,

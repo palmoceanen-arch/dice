@@ -164,6 +164,8 @@ export async function getLobby(lobbyId: string): Promise<LobbyWithPlayers | null
       user: {
         id: row.user_id,
         telegramId: 0,
+        yandexId: null,
+        platform: 'telegram',
         nickname: row.nickname,
         telegramUsername: row.telegram_username,
         firstName: null,
