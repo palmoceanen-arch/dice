@@ -5,7 +5,10 @@
   "scripts": {
     "dev": "vite --host",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "dev:yandex": "VITE_PLATFORM=yandex vite --host --config vite.config.ts",
+    "build:yandex": "VITE_PLATFORM=yandex vite build --config vite.config.ts",
+    "preview:yandex": "VITE_PLATFORM=yandex vite preview --outDir dist-yandex"
   },
   "dependencies": {
     "cannon-es": "^0.20.0",

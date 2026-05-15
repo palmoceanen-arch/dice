@@ -9,6 +9,7 @@ import { wsClient } from '../multiplayer/WebSocketClient';
 import { DiceValidator } from './DiceValidator';
 import { icon } from '../ui/icons';
 import { WallText } from './WallText';
+import { triggerHaptic, triggerHapticNotification } from './haptic';
 
 // Graphics quality presets
 export type GraphicsQuality = 'low' | 'medium' | 'high';
@@ -131,35 +132,6 @@ function normalizeTableConfig(config: any): TableConfig {
       normalIntensity: 0.6,
     },
   };
-}
-
-// Haptic feedback helper with throttling
-const hapticSupported = typeof window !== 'undefined' && 
-  window.Telegram?.WebApp?.HapticFeedback && 
-  typeof window.Telegram.WebApp.HapticFeedback.impactOccurred === 'function';
-
-let lastHapticTime = 0;
-const hapticThrottle = 50; // ms
-
-function triggerHaptic(style: 'light' | 'medium' | 'heavy') {
-  if (!hapticSupported) return;
-  const now = Date.now();
-  if (now - lastHapticTime < hapticThrottle) return;
-  lastHapticTime = now;
-  try {
-    window.Telegram?.WebApp.HapticFeedback.impactOccurred(style);
-  } catch {
-    // Ignore errors
-  }
-}
-
-function triggerHapticNotification(type: 'success' | 'error' | 'warning') {
-  if (!hapticSupported) return;
-  try {
-    window.Telegram?.WebApp.HapticFeedback.notificationOccurred(type);
-  } catch {
-    // Ignore errors
-  }
 }
 
 export class Game {

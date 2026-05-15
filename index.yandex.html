@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>Street Dice</title>
+  <!-- Yandex Games SDK v2 -->
+  <script src="/sdk.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Alfa+Slab+One&family=Montserrat:wght@400;500;600;700&display=swap">
+  <link href="https://fonts.googleapis.com/css2?family=Alfa+Slab+One&family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/src/styles/main.css">
+</head>
+<body>
+  <div id="app">
+    <canvas id="canvas"></canvas>
+    <div id="ui">
+      <div id="result"></div>
+      <div id="hint"></div>
+      <button id="permission-btn" style="display:none; pointer-events:auto; margin-top:15px; padding:12px 24px; font-size:16px; border:none; border-radius:20px; background:#4CAF50; color:white; cursor:pointer; font-family: 'Montserrat', sans-serif;">
+        Allow motion sensors
+      </button>
+    </div>
+  </div>
+  <script type="module" src="/src/main.yandex.ts"></script>
+</body>
+</html>
