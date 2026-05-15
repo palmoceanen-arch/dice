@@ -28,7 +28,13 @@ type MessageHandler = (data: unknown) => void;
 
 interface User {
   id: number;
-  telegramId: number;
+  // Telegram users only. For Yandex Games users this is null.
+  telegramId: number | null;
+  // Yandex Games users only. For Telegram users this is null.
+  yandexId?: string | null;
+  // Platform discriminator from the server. Optional so any preexisting
+  // server response (Telegram-only) still typechecks at the consumer side.
+  platform?: 'telegram' | 'yandex';
   nickname: string;
   telegramUsername: string | null;
   firstName: string | null;
@@ -38,6 +44,14 @@ interface User {
   equippedEffectId: number | null;
   referralCode?: string | null;
   pips?: number;
+}
+
+export interface WebSocketClientOptions {
+  // When provided, `authenticate()` sends `{type:'auth', ...getAuthPayload()}`
+  // instead of the default Telegram initData payload. The Yandex Games build
+  // uses this to ship `{platform:'yandex', signedData, playerInfo}` so the
+  // server can verify the Yandex HMAC signature.
+  getAuthPayload?: () => Record<string, unknown>;
 }
 
 interface Item {
@@ -121,7 +135,10 @@ export class WebSocketClient {
   // Reconnect support
   public pendingReconnect: { lobbyId: string; timeLeft: number } | null = null;
 
-  constructor(private serverUrl: string) {
+  constructor(
+    private serverUrl: string,
+    private options?: WebSocketClientOptions,
+  ) {
     // Start periodic connection check
     setInterval(() => {
       this.checkConnectionStatus();
@@ -211,9 +228,21 @@ export class WebSocketClient {
   }
 
   private authenticate() {
-    // Get Telegram initData
+    // Pluggable auth (used by the Yandex Games build to ship the player
+    // signature instead of Telegram initData).
+    if (this.options?.getAuthPayload) {
+      const payload = this.options.getAuthPayload();
+      this.send({
+        type: 'auth',
+        ...payload,
+      });
+      return;
+    }
+
+    // Default: Telegram initData (or a dev fallback when running outside
+    // the Telegram WebApp).
     const initData = window.Telegram?.WebApp?.initData || this.createDevInitData();
-    
+
     this.send({
       type: 'auth',
       initData

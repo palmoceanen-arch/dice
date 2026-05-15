@@ -1,12 +1,29 @@
-// Stub of ../multiplayer/WebSocketClient used in the Yandex Games build.
-// Vite aliases the original module to this file when VITE_PLATFORM=yandex.
+// `wsClient` shim for the Yandex Games build.
 //
-// The Yandex build is solo-only, so there is no real WebSocket. This module
-// exposes the same surface that game/Game.ts and ui/DiceEditorModal.ts read,
-// but routes pips, design keys and custom dice through the Yandex cloud
-// save layer instead of a server.
+// Vite aliases `../multiplayer/WebSocketClient` to this file (see
+// vite.config.ts) when VITE_PLATFORM=yandex, so anything in Game.ts /
+// MultiplayerUI / etc. that imports the canonical Telegram client lands here.
+//
+// We expose two implementations behind the same `wsClient` symbol:
+//
+//   - **Offline solo stub**  — when `VITE_WS_URL` is empty. No network
+//     activity; pips, design keys and custom dice are persisted through
+//     Yandex Cloud Save.
+//
+//   - **Live multiplayer client** — when `VITE_WS_URL` is set (e.g.
+//     `wss://street-dice.online/ws`). Reuses the canonical
+//     `multiplayer/WebSocketClient.ts` class with a pluggable auth payload
+//     that ships the Yandex Games signature; Cloud Save still backs the
+//     solo Free Roll pips so the offline path keeps working.
+//
+// IMPORTANT: the relative path to the real client is `../../multiplayer/...`
+// (note the **two** `..` segments). The vite alias regex is anchored at
+// `^../multiplayer/...` so `../../multiplayer/...` skips the alias and
+// resolves to the real implementation. Do not "simplify" the path.
 
 import { cloudSave } from '../cloudSave';
+import { WebSocketClient } from '../../multiplayer/WebSocketClient';
+import { getYandexAuth } from '../yandexAuth';
 
 export interface Friend {
   id: number;
@@ -46,6 +63,12 @@ export interface InventoryItem {
 
 type Listener = (data: any) => void;
 
+const WS_URL: string =
+  (import.meta as any).env?.VITE_WS_URL ??
+  (typeof process !== 'undefined' ? process.env?.VITE_WS_URL : '') ??
+  '';
+
+// === Offline solo stub ===
 class StubWebSocketClient {
   public isConnected = true;
   public isAuthenticated = true;
@@ -54,9 +77,6 @@ class StubWebSocketClient {
 
   private listeners = new Map<string, Set<Listener>>();
 
-  // DiceEditorModal reads wsClient.inventory.filter(...) to count design
-  // keys. Expose it as a getter that materialises virtual inventory entries
-  // from the cloud-save layer.
   get inventory(): InventoryItem[] {
     const keys = cloudSave.getDesignKeys();
     const out: InventoryItem[] = [];
@@ -90,9 +110,6 @@ class StubWebSocketClient {
     });
   }
 
-  // Game.ts calls this when a solo roll completes. DiceEditorModal calls
-  // this with { type: 'save_custom_dice', config }. Both flow through the
-  // cloud-save layer in the Yandex build.
   send(payload: any): void {
     if (!payload || typeof payload !== 'object') return;
     if (payload.type === 'solo_roll_complete') {
@@ -127,6 +144,98 @@ class StubWebSocketClient {
   getEquippedTableConfig(): any | null {
     return cloudSave.getEquippedTableConfig();
   }
+
+  // Stubbed lobby/friends/etc methods that MultiplayerUI may call.
+  // The offline build never opens the multiplayer UI but these keep the
+  // type surface compatible with the live client below.
+  connect(): Promise<void> { return Promise.resolve(); }
+  disconnect(): void { /* no-op */ }
+  getFriends(): void { /* no-op */ }
+  getInvitations(): void { /* no-op */ }
+  getFriendRequests(): void { /* no-op */ }
+  leaveLobby(): void { /* no-op */ }
 }
 
-export const wsClient = new StubWebSocketClient();
+// === Live multiplayer client (Yandex auth) ===
+// Subclass the canonical Telegram client and override the bits that need
+// Yandex semantics: auth payload, Free Roll cloud-save bookkeeping, and the
+// equipped dice/table config readers (which Game.ts polls for the local
+// preview). Everything else (reconnect, event emitter, lobby/friends/etc.
+// method surface) is inherited verbatim.
+class YandexLiveWSClient extends WebSocketClient {
+  constructor(serverUrl: string) {
+    super(serverUrl, {
+      getAuthPayload: () => {
+        const snap = getYandexAuth();
+        if (!snap) {
+          // Auth snapshot not loaded yet — send a stub guest payload so the
+          // server can decide what to do (in dev it accepts unsigned data).
+          return {
+            platform: 'yandex',
+            signedData: null,
+            playerInfo: { uuid: 'yandex-bootstrap' },
+          };
+        }
+        return {
+          platform: 'yandex',
+          signedData: snap.signedData,
+          playerInfo: snap.playerInfo,
+        };
+      },
+    });
+  }
+
+  // Free Roll pips still live in Cloud Save in the Yandex build (we don't
+  // want every solo roll to round-trip the server, and the server side has
+  // no concept of solo rolls anyway). Intercept and short-circuit.
+  override send(message: object) {
+    const msg = message as any;
+    if (msg?.type === 'solo_roll_complete') {
+      const delta = Number(msg.earnedPips ?? msg.pips ?? 0);
+      if (Number.isFinite(delta) && delta > 0) {
+        cloudSave.incrementPips(delta).catch((e) => {
+          console.warn('[yandex-ws] failed to increment pips in cloud', e);
+        });
+      }
+      cloudSave.bumpRollCount().catch(() => undefined);
+      return;
+    }
+    if (msg?.type === 'save_custom_dice') {
+      // Custom dice are a single-player cosmetic in the Yandex build —
+      // they don't need to round-trip the server. Mirror the stub semantics.
+      const ok = cloudSave.consumeDesignKey();
+      if (!ok) {
+        (this as any).emit?.('custom_dice_save_failed', { reason: 'no_key' });
+        return;
+      }
+      cloudSave.saveCustomDice(msg.config).catch((e) => {
+        console.warn('[yandex-ws] failed to persist custom dice', e);
+      });
+      (this as any).emit?.('custom_dice_saved', { config: msg.config });
+      return;
+    }
+    super.send(message);
+  }
+
+  // Game.ts asks the WS client for the player's currently-equipped dice /
+  // table config (for the local preview before a roll). In the Telegram
+  // build that's a server round-trip; in Yandex we read from Cloud Save.
+  getEquippedDiceConfig(): any | null {
+    return cloudSave.getEquippedDiceConfig();
+  }
+
+  getEquippedTableConfig(): any | null {
+    return cloudSave.getEquippedTableConfig();
+  }
+}
+
+function makeClient(): StubWebSocketClient | YandexLiveWSClient {
+  if (!WS_URL) {
+    console.log('[yandex-ws] VITE_WS_URL not set — offline solo stub mode');
+    return new StubWebSocketClient();
+  }
+  console.log('[yandex-ws] live multiplayer mode → ' + WS_URL);
+  return new YandexLiveWSClient(WS_URL);
+}
+
+export const wsClient = makeClient();

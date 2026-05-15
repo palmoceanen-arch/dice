@@ -17,6 +17,7 @@ import {
 } from './yandex/platform';
 import { cloudSave } from './yandex/cloudSave';
 import { SoloUI } from './yandex/SoloUI';
+import { loadYandexAuth } from './yandex/yandexAuth';
 // Bring the multiplayer stub onto window — Game.ts and a few other modules
 // look up `(window as any).wsClient` directly, so the stub must be reachable
 // the same way the real client is in the Telegram build.
@@ -61,9 +62,27 @@ document.body.addEventListener(
   { passive: false },
 );
 
+const WS_URL: string =
+  (import.meta as any).env?.VITE_WS_URL ??
+  (typeof process !== 'undefined' ? process.env?.VITE_WS_URL : '') ??
+  '';
+
 (async () => {
   const { player } = await initYandexPlatform();
   await cloudSave.loadAll();
+
+  // Capture the Yandex signed-player snapshot so the multiplayer WS client
+  // can ship it to the server on every (re)connect. Cheap no-op in offline
+  // / solo mode (returns a stable per-device guest uuid).
+  await loadYandexAuth();
+
+  // Kick off the live WebSocket connection if multiplayer is enabled for
+  // this build (VITE_WS_URL set, e.g. wss://street-dice.online/ws).
+  if (WS_URL && typeof (wsClient as any).connect === 'function') {
+    (wsClient as any).connect().catch((e: unknown) => {
+      console.warn('[main.yandex] initial WS connect failed (will auto-retry)', e);
+    });
+  }
 
   // Apply persisted settings.
   const settings = cloudSave.getSettings();
