@@ -112,6 +112,18 @@ Yandex lobby UI surfaces it last in the mode picker for that reason.
 4. Restart the WS server. Live multiplayer is now available to both
    Telegram and Yandex clients.
 
+> **Port 443 must be free for nginx.** The Yandex client connects to
+> `wss://street-dice.online/ws` (the default WSS port, 443). The bundled
+> nginx site (`/etc/nginx/sites-enabled/street-dice-wss`) proxies
+> `/ws` → `127.0.0.1:3002` and must own port 443 on this host. If you
+> co-host a VLESS / REALITY proxy (e.g. `xray-core` via `x-ui`) on the
+> same VPS, point it at a different port — REALITY works on any port,
+> and CSP-style `connect-src wss://street-dice.online` matches port 443
+> only. A mismatch is silent: REALITY's default behaviour without a
+> `fallbacks` block is to TLS-front non-VLESS traffic to its REALITY
+> target (e.g. `www.apple.com`), so the Yandex iframe sees an unrelated
+> certificate and the WS upgrade fails with no useful log line.
+
 ### 2. Yandex Games developer console
 
 Add the WebSocket server's domain to the **CSP** allowlist. The default
