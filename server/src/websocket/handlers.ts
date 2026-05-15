@@ -1,7 +1,7 @@
 import type { WebSocket } from 'ws';
 import type { GameMode } from '../types/index.js';
-import { validateInitData, parseInitDataUnsafe, extractStartParam } from '../services/auth.js';
-import { findOrCreateUser, getUserInventory, getShopItems, setNickname, equipItem, getUserByUsername, getUserById, updatePips, getUserPips } from '../services/users.js';
+import { validateInitData, parseInitDataUnsafe, extractStartParam, validateYandexSignature, parseYandexPlayerUnsafe } from '../services/auth.js';
+import { findOrCreateUser, findOrCreateYandexUser, getUserInventory, getShopItems, setNickname, equipItem, getUserByUsername, getUserById, updatePips, getUserPips } from '../services/users.js';
 import { getFriends, addFriend, removeFriend, sendFriendRequest, getPendingFriendRequests, acceptFriendRequest, declineFriendRequest } from '../services/friends.js';
 import { getReferralStats, getReferralList } from '../services/referrals.js';
 import { activateBoost, getActiveBoosts, getBoostState } from '../services/boosts.js';
@@ -26,6 +26,9 @@ export async function handleMessage(ws: WebSocket, message: any, userId: number 
   // Auth message - no userId required
   if (message.type === 'auth') {
     metricsCollector.authAttempt();
+    if (message.platform === 'yandex') {
+      return handleYandexAuth(ws, message.signedData ?? null, message.playerInfo ?? null);
+    }
     return handleAuth(ws, message.initData);
   }
   
@@ -227,6 +230,68 @@ async function handleAdminGift(targetUserId: number, item: any): Promise<void> {
 }
 
 // === Auth ===
+async function handleYandexAuth(
+  ws: WebSocket,
+  signedData: string | null,
+  playerInfo: { uuid?: string; publicName?: string; avatarUrlSmall?: string; avatarUrlMedium?: string; avatarUrlLarge?: string; lang?: string } | null,
+): Promise<number | null> {
+  // Verified payload (uuid) takes precedence over playerInfo.uuid. In prod we
+  // require a valid HMAC; in dev we fall back to the unsafe parser so local
+  // npm run dev works without YANDEX_APP_SECRET set.
+  const verified = signedData ? validateYandexSignature(signedData) : null;
+
+  let yandexPlayer: import('../types/index.js').YandexPlayer | null = null;
+  if (verified) {
+    yandexPlayer = {
+      uuid: verified.uuid,
+      publicName: playerInfo?.publicName,
+      avatarUrlSmall: playerInfo?.avatarUrlSmall,
+      avatarUrlMedium: playerInfo?.avatarUrlMedium,
+      avatarUrlLarge: playerInfo?.avatarUrlLarge,
+      lang: playerInfo?.lang,
+    };
+  } else if (config.isDev) {
+    yandexPlayer = parseYandexPlayerUnsafe(signedData, playerInfo ?? null);
+  }
+
+  if (!yandexPlayer) {
+    metricsCollector.authFailure();
+    logger.warn('Yandex auth failed', { hasSignedData: !!signedData });
+    ws.send(JSON.stringify({ type: 'auth_error', message: 'Invalid Yandex signature' }));
+    return null;
+  }
+
+  const user = await findOrCreateYandexUser(yandexPlayer);
+  const inventory = await getUserInventory(user.id);
+  const activeBoosts = await getActiveBoosts(user.id);
+
+  setUserIdForWs(ws, user.id);
+  connections.addConnection(user, ws);
+
+  const reconnectInfo = lobby.canReconnect(user.id);
+
+  ws.send(JSON.stringify({
+    type: 'auth_success',
+    user,
+    inventory,
+    activeBoosts,
+    canReconnect: reconnectInfo ? {
+      lobbyId: reconnectInfo.lobbyId,
+      timeLeft: reconnectInfo.timeLeft,
+    } : null,
+  }));
+
+  metricsCollector.authSuccess();
+  logger.info('Yandex user authenticated', {
+    userId: user.id,
+    yandexId: user.yandexId,
+    nickname: user.nickname,
+    canReconnect: !!reconnectInfo,
+  });
+
+  return user.id;
+}
+
 async function handleAuth(ws: WebSocket, initData: string): Promise<number | null> {
   const telegramUser = config.isDev 
     ? parseInitDataUnsafe(initData) 

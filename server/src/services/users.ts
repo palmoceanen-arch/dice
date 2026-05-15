@@ -1,5 +1,5 @@
 import { query } from '../db/client.js';
-import type { User, TelegramUser, Item } from '../types/index.js';
+import type { User, TelegramUser, YandexPlayer, Item } from '../types/index.js';
 import { nanoid } from 'nanoid';
 import { generateReferralCode, processReferral } from './referrals.js';
 import { logger } from '../utils/logger.js';
@@ -85,6 +85,64 @@ export async function findOrCreateUser(telegramUser: TelegramUser, referralCode?
   }
   
   return user;
+}
+
+// findOrCreate for Yandex Games players. Mirrors findOrCreateUser, but keyed
+// on yandex_id (string UUID) and stores `platform='yandex'`. Yandex users
+// have no Telegram username or referrals (the multiplayer Yandex MVP
+// intentionally skips the referral system), but they still receive default
+// items so their first lobby is playable.
+export async function findOrCreateYandexUser(player: YandexPlayer): Promise<User> {
+  // Yandex player display name can be empty (`""`) — fall back to a generic
+  // "Player" base so the nickname generator does not blow up.
+  const displayName = (player.publicName && player.publicName.trim().length > 0)
+    ? player.publicName.trim()
+    : 'Player';
+  const avatarUrl = player.avatarUrlMedium
+    || player.avatarUrlLarge
+    || player.avatarUrlSmall
+    || null;
+
+  const existingUser = await query<User>(
+    'SELECT * FROM users WHERE yandex_id = $1',
+    [player.uuid]
+  );
+  const isNewUser = existingUser.rows.length === 0;
+
+  const result = await query<User>(
+    `INSERT INTO users (yandex_id, platform, nickname, first_name, avatar_url, last_online)
+     VALUES ($1, 'yandex', $2, $3, $4, NOW())
+     ON CONFLICT (yandex_id) DO UPDATE SET
+       last_online = NOW(),
+       first_name = EXCLUDED.first_name,
+       avatar_url = EXCLUDED.avatar_url
+     RETURNING *`,
+    [
+      player.uuid,
+      isNewUser ? await generateNickname(displayName) : displayName,
+      displayName,
+      avatarUrl,
+    ]
+  );
+
+  const user = mapUser(result.rows[0]);
+
+  // Grant default items on first sign-in so the user lands in a usable state.
+  const hasItems = await query<{ count: string }>(
+    'SELECT COUNT(*) as count FROM user_items WHERE user_id = $1',
+    [user.id]
+  );
+
+  if (parseInt(hasItems.rows[0].count) === 0) {
+    await grantDefaultItems(user.id);
+  }
+
+  return user;
+}
+
+export async function getUserByYandexId(yandexId: string): Promise<User | null> {
+  const result = await query<User>('SELECT * FROM users WHERE yandex_id = $1', [yandexId]);
+  return result.rows.length > 0 ? mapUser(result.rows[0]) : null;
 }
 
 async function grantDefaultItems(userId: number): Promise<void> {
