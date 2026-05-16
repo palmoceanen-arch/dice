@@ -1077,44 +1077,18 @@ export class GameSync {
     `;
     
     resultEl.textContent = message;
-    
-    // Add New Game button for host if game is over
-    if (showNewGameButton && wsClient.isHost) {
-      const buttonContainer = document.createElement('div');
-      buttonContainer.style.marginTop = '16px';
-      
-      const newGameBtn = document.createElement('button');
-      newGameBtn.textContent = 'New Game';
-      newGameBtn.style.cssText = `
-        padding: 10px 24px;
-        background: #4CAF50;
-        border: none;
-        border-radius: 8px;
-        color: white;
-        font-size: 14px;
-        font-weight: 600;
-        cursor: pointer;
-        font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      `;
-      newGameBtn.addEventListener('click', () => {
-        resultEl.remove();
-        wsClient.restartGame();
-      });
-      
-      buttonContainer.appendChild(newGameBtn);
-      resultEl.appendChild(buttonContainer);
+
+    if (showNewGameButton) {
+      resultEl.appendChild(this.buildGameOverButtons(resultEl));
     }
-    
+
     document.body.appendChild(resultEl);
-    
-    // Click to close (for non-host players)
-    if (!showNewGameButton || !wsClient.isHost) {
+
+    // Mid-game results auto-dismiss and accept click-to-close. Game-over
+    // sticks until the player picks "New Game" / "Exit".
+    if (!showNewGameButton) {
       resultEl.style.cursor = 'pointer';
       resultEl.addEventListener('click', () => resultEl.remove());
-    }
-    
-    // Auto-remove after delay only if no button
-    if (!showNewGameButton) {
       setTimeout(() => resultEl.remove(), 3000);
     }
   }
@@ -1202,48 +1176,24 @@ export class GameSync {
     `;
     
     resultEl.textContent = displayMessage;
-    
-    // Add New Game button for host if game is over
-    if (showNewGameButton && wsClient.isHost) {
-      const buttonContainer = document.createElement('div');
-      buttonContainer.style.marginTop = '16px';
-      
-      const newGameBtn = document.createElement('button');
-      newGameBtn.textContent = 'New Game';
-      newGameBtn.style.cssText = `
-        padding: 10px 24px;
-        background: #4CAF50;
-        border: none;
-        border-radius: 8px;
-        color: white;
-        font-size: 14px;
-        font-weight: 600;
-        cursor: pointer;
-        font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      `;
-      newGameBtn.addEventListener('click', () => {
-        resultEl.remove();
-        wsClient.restartGame();
-      });
-      
-      buttonContainer.appendChild(newGameBtn);
-      resultEl.appendChild(buttonContainer);
+
+    if (showNewGameButton) {
+      resultEl.appendChild(this.buildGameOverButtons(resultEl));
     }
-    
+
     document.body.appendChild(resultEl);
-    
-    // Click to close (for non-host players or non-game-over)
-    if (!showNewGameButton || !wsClient.isHost) {
+
+    // Mid-game results auto-dismiss and accept click-to-close. Game-over
+    // sticks until the player picks "New Game" / "Exit".
+    if (!showNewGameButton) {
       resultEl.style.cursor = 'pointer';
       resultEl.addEventListener('click', () => resultEl.remove());
+      if (autoRemove) {
+        const delay = outcome === 'roll' ? 1000 : 2500;
+        setTimeout(() => resultEl.remove(), delay);
+      }
     }
-    
-    // Auto-remove after delay
-    if (autoRemove) {
-      const delay = outcome === 'roll' ? 1000 : 2500;
-      setTimeout(() => resultEl.remove(), delay);
-    }
-    
+
     // Update turn indicator to show/hide Stop button
     this.updateTurnIndicator();
   }
@@ -1385,48 +1335,24 @@ export class GameSync {
     `;
     
     resultEl.textContent = displayMessage;
-    
-    // Add New Game button for host if game is over
-    if (showNewGameButton && wsClient.isHost) {
-      const buttonContainer = document.createElement('div');
-      buttonContainer.style.marginTop = '16px';
-      
-      const newGameBtn = document.createElement('button');
-      newGameBtn.textContent = 'New Game';
-      newGameBtn.style.cssText = `
-        padding: 10px 24px;
-        background: #4CAF50;
-        border: none;
-        border-radius: 8px;
-        color: white;
-        font-size: 14px;
-        font-weight: 600;
-        cursor: pointer;
-        font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      `;
-      newGameBtn.addEventListener('click', () => {
-        resultEl.remove();
-        wsClient.restartGame();
-      });
-      
-      buttonContainer.appendChild(newGameBtn);
-      resultEl.appendChild(buttonContainer);
+
+    if (showNewGameButton) {
+      resultEl.appendChild(this.buildGameOverButtons(resultEl));
     }
-    
+
     document.body.appendChild(resultEl);
-    
-    // Click to close (for non-host players or non-game-over)
-    if (!showNewGameButton || !wsClient.isHost) {
+
+    // Mid-game results auto-dismiss and accept click-to-close. Game-over
+    // sticks until the player picks "New Game" / "Exit".
+    if (!showNewGameButton) {
       resultEl.style.cursor = 'pointer';
       resultEl.addEventListener('click', () => resultEl.remove());
+      if (autoRemove) {
+        const delay = outcome === 'roll' ? 1500 : 2500;
+        setTimeout(() => resultEl.remove(), delay);
+      }
     }
-    
-    // Auto-remove after delay
-    if (autoRemove) {
-      const delay = outcome === 'roll' ? 1500 : 2500;
-      setTimeout(() => resultEl.remove(), delay);
-    }
-    
+
     // Update turn indicator to show/hide buttons
     this.updateTurnIndicator();
   }
@@ -1806,6 +1732,57 @@ export class GameSync {
     this.playersList.innerHTML = playersHtml;
   }
   
+  // Builds the "New Game" (host only) + "Exit" button row attached to a
+  // game-over result modal. Same UX in Mexico / Greedy Pig / Palmos: every
+  // player can leave the lobby and bounce back to the menu; only the host
+  // gets the restart button. Until the user picks one, the modal stays put
+  // so the result doesn't auto-dismiss.
+  private buildGameOverButtons(resultEl: HTMLElement): HTMLElement {
+    const container = document.createElement('div');
+    container.style.cssText = `
+      margin-top: 16px;
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+      flex-wrap: wrap;
+    `;
+
+    const baseBtn = `
+      padding: 10px 24px;
+      border: none;
+      border-radius: 8px;
+      color: white;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    `;
+
+    if (wsClient.isHost) {
+      const newGameBtn = document.createElement('button');
+      newGameBtn.textContent = 'New Game';
+      newGameBtn.style.cssText = baseBtn + 'background: #4CAF50;';
+      newGameBtn.addEventListener('click', () => {
+        resultEl.remove();
+        wsClient.restartGame();
+      });
+      container.appendChild(newGameBtn);
+    }
+
+    const exitBtn = document.createElement('button');
+    exitBtn.textContent = 'Exit';
+    exitBtn.style.cssText = baseBtn + 'background: rgba(255,255,255,0.15);';
+    exitBtn.addEventListener('click', () => {
+      resultEl.remove();
+      // `lobby_left` listener in setupEventListeners() will call
+      // resetToSoloMode() and return the UI to the lobby/menu.
+      wsClient.leaveLobby();
+    });
+    container.appendChild(exitBtn);
+
+    return container;
+  }
+
   private celebrateWinner() {
     // Запускаем конфетти с разных сторон
     const duration = 3000;

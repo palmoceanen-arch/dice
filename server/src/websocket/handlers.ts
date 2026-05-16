@@ -1382,22 +1382,25 @@ async function handleRestartGame(userId: number): Promise<void> {
     connections.send(userId, { type: 'error', message: 'Not in a lobby' });
     return;
   }
-  
+
   const lobbyData = await lobby.getLobby(conn.lobbyId);
   if (!lobbyData || lobbyData.hostId !== userId) {
     connections.send(userId, { type: 'error', message: 'Only host can restart the game' });
     return;
   }
-  
-  // Check if betting is required (2+ players)
+
+  // No-bet lobbies (e.g. the Yandex Games build) skip the betting UI on
+  // restart, matching what `handleStartGame` does on initial start.
+  // Without this, the host's "New Game" click on Yandex sent
+  // `show_betting_ui` to a client that never registered a handler for it
+  // and the game silently hung.
   const playerIds = lobby.getLobbyPlayers(conn.lobbyId);
-  
-  if (playerIds.length >= 2) {
-    // Initialize betting for new game
+  const skipBetting = lobby.isNoBetLobby(conn.lobbyId);
+
+  if (!skipBetting && playerIds.length >= 2) {
     BettingManager.initialize(conn.lobbyId, lobby.getLobbyBetAmount(conn.lobbyId));
     logger.info('[BETTING] Initialized for restart', { lobbyId: conn.lobbyId, playerCount: playerIds.length });
-    
-    // Show betting UI to all players with their balances
+
     for (const playerId of playerIds) {
       const balance = await getUserPips(playerId);
       connections.send(playerId, {
@@ -1406,12 +1409,16 @@ async function handleRestartGame(userId: number): Promise<void> {
         balance
       });
     }
-    
+
     logger.info('[BETTING] Showing betting UI for restart', { lobbyId: conn.lobbyId });
-    return; // Wait for bets to be placed
+    return;
   }
-  
-  // Single player - start game immediately
+
+  logger.info('restart_game starting without betting', {
+    lobbyId: conn.lobbyId,
+    playerCount: playerIds.length,
+    skipBetting,
+  });
   await startGameAfterBetting(conn.lobbyId);
 }
 
