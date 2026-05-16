@@ -16,6 +16,7 @@ import { cloudSave } from './cloudSave';
 import { SoloShop } from './SoloShop';
 import { SoloInventory } from './SoloInventory';
 import { DiceEditorModal } from '../ui/DiceEditorModal';
+import { BoostsModal } from '../ui/BoostsModal';
 import { MultiplayerLobbyUI } from './MultiplayerLobbyUI';
 import { haptic, isPlayerAuthorized, openAuthDialog } from './platform';
 import { getCurrentLanguage, setLanguage, onLanguageChange, t } from '../../shared/i18n';
@@ -93,6 +94,47 @@ function ensureStyles(): void {
     .yui-btn.primary { background: #ffd84d; color: #1a1a1a; }
     .yui-btn.ghost { background: rgba(255,255,255,0.08); color: #fff; }
 
+    /* Floating boost button on the idle screen. Mirrors the Telegram
+       build's #boost-icon position (bottom-center) so behaviour and
+       muscle memory are consistent. The icon is hidden during an
+       active multiplayer game by Game.updateUIVisibility(); on Yandex
+       the GameSync stub always reports "not in multiplayer", so the
+       icon stays visible on idle. */
+    #boost-icon {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 56px;
+      height: 56px;
+      background: rgba(0, 0, 0, 0.55);
+      border: 0;
+      border-radius: 50%;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: transform 0.2s, background 0.2s;
+      pointer-events: auto;
+      z-index: 150;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+    }
+    #boost-icon:hover { transform: translateX(-50%) scale(1.08); background: rgba(0, 0, 0, 0.75); }
+    #boost-icon:active { transform: translateX(-50%) scale(0.95); }
+    #boost-icon svg { filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4)); }
+    @keyframes pulse {
+      0%, 100% { transform: translateX(-50%) scale(1); }
+      50% { transform: translateX(-50%) scale(1.12); }
+    }
+    @keyframes slideDown {
+      from { transform: translateX(-50%) translateY(-20px); opacity: 0; }
+      to { transform: translateX(-50%) translateY(0); opacity: 1; }
+    }
+    @keyframes slideUp {
+      from { transform: translateX(-50%) translateY(0); opacity: 1; }
+      to { transform: translateX(-50%) translateY(-20px); opacity: 0; }
+    }
+
     /* Styles below are re-exported from MultiplayerUI for the shared
        DiceEditorModal, which the Yandex solo build opens directly. */
     .mp-confirm-overlay {
@@ -123,6 +165,19 @@ const ICON_MENU = `
   </svg>
 `;
 
+// Same gold zap glyph the Telegram build ships in index.html for #boost-icon.
+const ICON_BOOST = `
+  <svg width="32" height="32" viewBox="0 0 24 24">
+    <defs>
+      <linearGradient id="yui-gold" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#FFD700" stop-opacity="1" />
+        <stop offset="100%" stop-color="#FFA500" stop-opacity="1" />
+      </linearGradient>
+    </defs>
+    <path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z" fill="url(#yui-gold)"/>
+  </svg>
+`;
+
 export class SoloUI {
   private game: Game;
   private shop: SoloShop;
@@ -132,6 +187,7 @@ export class SoloUI {
   private menuButton!: HTMLElement;
   private settingsOverlay: HTMLElement | null = null;
   private multiplayer: MultiplayerLobbyUI | null = null;
+  private boostButton!: HTMLElement;
 
   constructor(game: Game) {
     this.game = game;
@@ -175,6 +231,8 @@ export class SoloUI {
     this.balanceEl.className = 'yui-balance';
     document.body.appendChild(this.balanceEl);
 
+    this.mountBoostButton();
+
     this.renderMenu();
     this.refreshBalance();
     this.startBalanceTicker();
@@ -187,6 +245,39 @@ export class SoloUI {
       if (this.menuEl.contains(target) || this.menuButton.contains(target)) return;
       this.menuEl.classList.remove('open');
     });
+  }
+
+  /**
+   * Mount the boost button at the bottom of the idle screen and wire it
+   * up to BoostsModal. The Telegram build hard-codes this element in
+   * index.html; we create it in JS for parity. BoostsModal.init() does
+   * the rest (cooldown timers, ad-rewarded activation via the Yandex
+   * stub WS client). Game.updateUIVisibility() toggles its visibility
+   * when entering/leaving a live multiplayer game.
+   */
+  private mountBoostButton(): void {
+    let button = document.getElementById('boost-icon') as HTMLButtonElement | null;
+    if (!button) {
+      const created = document.createElement('button');
+      created.id = 'boost-icon';
+      created.type = 'button';
+      created.setAttribute('aria-label', 'Boosts');
+      created.innerHTML = ICON_BOOST;
+      document.body.appendChild(created);
+      button = created;
+    } else {
+      button.innerHTML = ICON_BOOST;
+    }
+    button.addEventListener('click', () => {
+      haptic.light();
+      BoostsModal.toggle();
+    });
+    this.boostButton = button;
+    // Make sure the icon is visible immediately on the idle screen.
+    // Game.updateUIVisibility() will keep it correct as multiplayer
+    // toggles, but on first paint that runs before the canvas dimensions
+    // are settled, so we show it eagerly here too.
+    this.boostButton.style.display = 'flex';
   }
 
   private toggleMenu(): void {

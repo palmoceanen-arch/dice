@@ -18,6 +18,7 @@ import {
 import { cloudSave } from './yandex/cloudSave';
 import { SoloUI } from './yandex/SoloUI';
 import { loadYandexAuth } from './yandex/yandexAuth';
+import { BoostsModal } from './ui/BoostsModal';
 // Bring the multiplayer stub onto window — Game.ts and a few other modules
 // look up `(window as any).wsClient` directly, so the stub must be reachable
 // the same way the real client is in the Telegram build.
@@ -46,6 +47,20 @@ game.start();
 const soloUI = new SoloUI(game);
 soloUI.mount();
 (window as any).soloUI = soloUI;
+
+// Initialize the boosts system. Listeners on wsClient (which is the Yandex
+// stub here — see ./yandex/stubs/WebSocketClient.ts) drive cooldown timers
+// and ad-rewarded activation. The boost button itself is mounted by SoloUI.
+BoostsModal.init();
+
+// Sync the boost icon's visibility with the current game mode (the Yandex
+// GameSync stub always reports "not in multiplayer", so on the idle screen
+// the icon stays visible). Run on the next tick so the DOM is ready.
+setTimeout(() => {
+  if (typeof (game as any).updateUIVisibility === 'function') {
+    (game as any).updateUIVisibility();
+  }
+}, 100);
 
 // Block native pull-to-refresh on mobile, same as the Telegram build.
 document.body.addEventListener(

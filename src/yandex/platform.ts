@@ -149,6 +149,66 @@ export function signalGameplayStop(): void {
   }
 }
 
+/**
+ * Show a rewarded video ad. Resolves with `true` once the SDK fires
+ * `onRewarded` (the player watched the ad to completion and the reward
+ * should be granted), `false` if the player closed the ad early or it
+ * errored out.
+ *
+ * When the SDK is not present (local dev without the Yandex Games proxy)
+ * we resolve `true` immediately so the dev flow keeps working — the live
+ * Yandex Games portal is the only environment that actually serves ads.
+ */
+export function showRewardedVideo(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const ysdk = state.ysdk;
+    if (!ysdk || !ysdk.adv || typeof ysdk.adv.showRewardedVideo !== 'function') {
+      console.warn(
+        '[yandex] showRewardedVideo not available — granting reward in dev mode',
+      );
+      resolve(true);
+      return;
+    }
+
+    let rewarded = false;
+    let settled = false;
+    const settle = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    try {
+      ysdk.adv.showRewardedVideo({
+        callbacks: {
+          onOpen: () => {
+            // Pause gameplay analytics while the ad is up.
+            signalGameplayStop();
+          },
+          onRewarded: () => {
+            rewarded = true;
+          },
+          onClose: () => {
+            signalGameplayStart();
+            settle(rewarded);
+          },
+          onError: (e: unknown) => {
+            console.warn('[yandex] showRewardedVideo error', e);
+            signalGameplayStart();
+            settle(false);
+          },
+        },
+      });
+    } catch (e) {
+      console.warn('[yandex] showRewardedVideo threw synchronously', e);
+      settle(false);
+    }
+
+    // Hard timeout so a buggy SDK can never freeze the boost flow.
+    setTimeout(() => settle(rewarded), 90_000);
+  });
+}
+
 export const haptic = {
   light: () => vibrate(10),
   medium: () => vibrate(20),
