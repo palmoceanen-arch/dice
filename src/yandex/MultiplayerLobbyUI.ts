@@ -32,6 +32,7 @@
 // Telegram MultiplayerUI.
 
 import { wsClient } from './stubs/WebSocketClient';
+import { cloudSave } from './cloudSave';
 import { haptic } from './platform';
 import { t, getCurrentLanguage } from '../../shared/i18n';
 
@@ -379,6 +380,7 @@ export class MultiplayerLobbyUI {
   // Latest player stats snapshot, fetched on open and refreshed on
   // every `stats_updated` push. `null` means "haven't loaded yet".
   private stats: PlayerStatsShape | null = null;
+  private needsServerPipsSync = false;
 
   // Bound handler refs so we can `off()` them on close (we re-attach on open).
   private readonly onLobbyCreated = (m: any) => this.handleLobbyEvent(m, 'created');
@@ -482,6 +484,13 @@ export class MultiplayerLobbyUI {
     }
   }
 
+  private syncYandexPips(pips = cloudSave.getPips()): void {
+    const c = wsClient as any;
+    if (!c.isConnected || typeof c.send !== 'function') return;
+    const value = Math.max(0, Math.floor(Number(pips) || 0));
+    try { c.send({ type: 'sync_yandex_pips', pips: value }); } catch { /* swallow — best-effort */ }
+  }
+
   private handleLobbyEvent(message: any, _kind: 'created' | 'joined' | 'state'): void {
     if (message?.lobby) {
       this.currentLobby = message.lobby as LobbyShape;
@@ -582,13 +591,23 @@ export class MultiplayerLobbyUI {
   private handlePlayerStats(message: any): void {
     const raw = message?.stats;
     if (!raw || typeof raw !== 'object') return;
+    const serverPips = Math.max(0, Math.floor(Number(raw.pips) || 0));
+    const cloudPips = Math.max(0, Math.floor(Number(cloudSave.getPips()) || 0));
+    const shouldBackfillServer = serverPips === 0 && cloudPips > 0;
+    const pips = shouldBackfillServer ? cloudPips : serverPips;
+    this.needsServerPipsSync = shouldBackfillServer;
+    if (shouldBackfillServer) {
+      this.syncYandexPips(cloudPips);
+    } else if (serverPips !== cloudPips) {
+      cloudSave.setPips(serverPips).catch((e) => console.warn('[yandex-mp] failed to mirror server pips', e));
+    }
     this.stats = {
       xp: Number(raw.xp) || 0,
       level: Math.max(1, Number(raw.level) || 1),
       gamesPlayed: Number(raw.gamesPlayed) || 0,
       wins: Number(raw.wins) || 0,
       losses: Number(raw.losses) || 0,
-      pips: Number(raw.pips) || 0,
+      pips,
     };
     // Mirror the pip balance onto wsClient.user so the bet picker can
     // disable chips the player can't afford without an extra request.
@@ -616,6 +635,7 @@ export class MultiplayerLobbyUI {
     try {
       const c = wsClient as any;
       if (typeof c.joinQueue === 'function') {
+        if (this.needsServerPipsSync) this.syncYandexPips();
         c.joinQueue(mode, bet);
       } else {
         this.errorText = 'Matchmaking not available on this build';
@@ -654,6 +674,7 @@ export class MultiplayerLobbyUI {
     try {
       const c = wsClient as any;
       if (typeof c.createLobby === 'function') {
+        if (this.needsServerPipsSync) this.syncYandexPips();
         c.createLobby(mode, bet);
       } else {
         this.errorText = 'Multiplayer not available on this build';

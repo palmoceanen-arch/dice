@@ -264,6 +264,16 @@ class CloudSaveManager {
     this.queueStats({ pips: delta });
   }
 
+  async setPips(value: number): Promise<void> {
+    if (!Number.isFinite(value)) return;
+    const next = Math.max(0, Math.floor(value));
+    const delta = next - this.stats.pips;
+    if (delta === 0) return;
+    this.stats.pips = next;
+    saveToLocal(LS_STATS_KEY, this.stats);
+    this.queueStats({ pips: delta });
+  }
+
   async spendPips(amount: number): Promise<boolean> {
     if (!Number.isFinite(amount) || amount <= 0) return false;
     if (this.stats.pips < amount) return false;

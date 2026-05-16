@@ -231,6 +231,9 @@ export async function handleMessage(ws: WebSocket, message: any, userId: number 
       case 'mm_leave_queue':
         matchmaking.leaveQueue(userId);
         break;
+      case 'sync_yandex_pips':
+        await handleSyncYandexPips(userId, message.pips);
+        break;
       case 'get_player_stats':
         await handleGetPlayerStats(userId);
         break;
@@ -2633,6 +2636,19 @@ async function handleSendReaction(userId: number, content: string): Promise<void
 }
 
 // === Player stats (Yandex profile widget / matchmaking level) ===
+async function handleSyncYandexPips(userId: number, pips: number): Promise<void> {
+  const result = await query<{ id: number }>(
+    `UPDATE users
+       SET pips = $2
+     WHERE id = $1 AND platform = 'yandex' AND COALESCE(pips, 0) = 0
+     RETURNING id`,
+    [userId, pips],
+  );
+
+  if (result.rows.length === 0) return;
+  await handleGetPlayerStats(userId);
+}
+
 async function handleGetPlayerStats(userId: number): Promise<void> {
   const stats = await getPlayerStats(userId);
   if (!stats) {
