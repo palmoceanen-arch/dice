@@ -71,37 +71,44 @@ export function parseInitDataUnsafe(initData: string): TelegramUser | null {
 // === Yandex Games signature validation ===
 //
 // `ysdk.getPlayer({ signed: true })` returns `player.signature` as a string
-// of the form `<base64-encoded payload>.<base64-encoded HMAC-SHA256 sig>`.
-// The HMAC is computed using the application secret key from the Yandex Games
-// console (`YANDEX_APP_SECRET`).
+// of the form `<base64-encoded HMAC-SHA256 sig>.<base64-encoded JSON payload>`.
 //
-// We accept the secret either as raw text or as a base64-encoded string —
-// some console fields hand it out base64-encoded. If the provided secret
-// decodes cleanly from base64 to non-empty bytes we use those bytes,
-// otherwise we use the raw UTF-8 bytes as the HMAC key.
+// The HMAC-SHA256 is computed with:
+//   - key = the application secret string as raw UTF-8 bytes (NOT base64-decoded)
+//   - msg = the base64-DECODED JSON bytes (NOT the base64 string itself)
+//
+// The JSON payload has shape:
+//   { algorithm: 'HMAC-SHA256', issuedAt: <unix-seconds>, requestPayload: <string>,
+//     data: { id: <uuid>, uniqueID: <uuid>, lang: <string>, publicName: <string>, ... } }
+//
+// This format is undocumented in the SDK docs but matches what `ysdk.getPlayer({signed:true})`
+// returns in production for Yandex Games app 530390.
 
 export interface YandexSignedPayload {
   uuid: string;
-  [key: string]: unknown;
-}
-
-function resolveYandexHmacKey(secret: string): Buffer {
-  // Try base64 first — Yandex console secrets are typically base64.
-  try {
-    const decoded = Buffer.from(secret, 'base64');
-    if (decoded.length > 0 && decoded.toString('base64').replace(/=+$/, '') === secret.replace(/=+$/, '')) {
-      return decoded;
-    }
-  } catch {
-    // ignore and fall through
-  }
-  return Buffer.from(secret, 'utf-8');
+  issuedAt?: number;
+  publicName?: string;
+  avatarIdHash?: string;
+  lang?: string;
 }
 
 function base64UrlToBuffer(input: string): Buffer {
   const normalized = input.replace(/-/g, '+').replace(/_/g, '/');
   const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
   return Buffer.from(padded, 'base64');
+}
+
+interface YandexPayloadJson {
+  algorithm?: string;
+  issuedAt?: number;
+  requestPayload?: string;
+  data?: {
+    id?: string;
+    uniqueID?: string;
+    publicName?: string;
+    avatarIdHash?: string;
+    lang?: string;
+  };
 }
 
 export function validateYandexSignature(signedData: string): YandexSignedPayload | null {
@@ -114,18 +121,18 @@ export function validateYandexSignature(signedData: string): YandexSignedPayload
     return null;
   }
 
-  // Yandex emits `<payload>.<sig>` where both halves are base64 (url-safe in some SDK versions).
   const parts = signedData.split('.');
   if (parts.length !== 2) {
-    console.error('Invalid Yandex signature format (expected payload.sig)');
+    console.error('Invalid Yandex signature format (expected sig.payload)');
     return null;
   }
 
-  const [payloadB64, sigB64] = parts;
+  const [sigB64, payloadB64] = parts;
 
   try {
-    const hmacKey = resolveYandexHmacKey(config.yandex.appSecret);
-    const expectedSig = crypto.createHmac('sha256', hmacKey).update(payloadB64).digest();
+    const hmacKey = Buffer.from(config.yandex.appSecret, 'utf-8');
+    const payloadRaw = base64UrlToBuffer(payloadB64);
+    const expectedSig = crypto.createHmac('sha256', hmacKey).update(payloadRaw).digest();
     const providedSig = base64UrlToBuffer(sigB64);
 
     if (expectedSig.length !== providedSig.length || !crypto.timingSafeEqual(expectedSig, providedSig)) {
@@ -133,15 +140,21 @@ export function validateYandexSignature(signedData: string): YandexSignedPayload
       return null;
     }
 
-    const payloadJson = base64UrlToBuffer(payloadB64).toString('utf-8');
-    const payload = JSON.parse(payloadJson) as YandexSignedPayload;
+    const payload = JSON.parse(payloadRaw.toString('utf-8')) as YandexPayloadJson;
+    const uuid = payload?.data?.id || payload?.data?.uniqueID;
 
-    if (!payload.uuid || typeof payload.uuid !== 'string') {
-      console.error('Yandex payload missing uuid');
+    if (!uuid || typeof uuid !== 'string') {
+      console.error('Yandex payload missing data.id');
       return null;
     }
 
-    return payload;
+    return {
+      uuid,
+      issuedAt: payload.issuedAt,
+      publicName: payload.data?.publicName,
+      avatarIdHash: payload.data?.avatarIdHash,
+      lang: payload.data?.lang,
+    };
   } catch (err) {
     console.error('Failed to validate Yandex signature:', err);
     return null;
@@ -158,16 +171,19 @@ export function parseYandexPlayerUnsafe(
 ): YandexPlayer | null {
   try {
     if (signedData && signedData.includes('.')) {
-      const [payloadB64] = signedData.split('.');
-      const payload = JSON.parse(base64UrlToBuffer(payloadB64).toString('utf-8')) as YandexSignedPayload;
-      if (payload.uuid) {
+      // Yandex format is `<sig>.<payload>` so the JSON payload is the SECOND half.
+      const parts = signedData.split('.');
+      const payloadB64 = parts.length === 2 ? parts[1] : parts[0];
+      const payload = JSON.parse(base64UrlToBuffer(payloadB64).toString('utf-8')) as YandexPayloadJson;
+      const uuid = payload?.data?.id || payload?.data?.uniqueID;
+      if (uuid) {
         return {
-          uuid: payload.uuid,
-          publicName: playerInfo?.publicName,
+          uuid,
+          publicName: playerInfo?.publicName || payload.data?.publicName,
           avatarUrlSmall: playerInfo?.avatarUrlSmall,
           avatarUrlMedium: playerInfo?.avatarUrlMedium,
           avatarUrlLarge: playerInfo?.avatarUrlLarge,
-          lang: playerInfo?.lang,
+          lang: playerInfo?.lang || payload.data?.lang,
         };
       }
     }

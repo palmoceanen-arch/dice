@@ -107,8 +107,9 @@ Yandex lobby UI surfaces it last in the mode picker for that reason.
 3. Set `YANDEX_APP_SECRET` in the server environment.
    - Grab it from the Yandex Games developer console:
      https://yandex.com/dev/games/doc/en/console/integration
-   - Paste either the raw text or its base64-encoded form. The server
-     auto-detects which form it is (`server/src/services/auth.ts`).
+   - Paste it **as a literal string, exactly as the console shows it** (no
+     trimming, no base64-decoding). Yandex uses the raw string bytes as
+     the HMAC key — see the algorithm note below.
 4. Restart the WS server. Live multiplayer is now available to both
    Telegram and Yandex clients.
 
@@ -122,8 +123,13 @@ cannot connect:
 connect-src wss://street-dice.online
 ```
 
-Path: Yandex Games console → your game → **CSP** tab → add
-`wss://street-dice.online` to the allowlist.
+Path: Yandex Games console → your game → **CSP** tab → add the host as a
+**bare hostname**: `street-dice.online` (no scheme, no path, no port).
+Yandex auto-assumes `https://` and `wss://` for any approved host. Submitting
+`wss://street-dice.online/ws` or `https://street-dice.online/ws` will
+be rejected. Approval typically takes a few business days; while pending,
+the CSP report-only header still logs the violation in the iframe console,
+but the policy that actively blocks it will accept the host once approved.
 
 > Reminder: the `fonts.googleapis.com` host is already in Yandex's
 > default whitelist, so external fonts keep working without further
@@ -149,6 +155,56 @@ When `VITE_WS_URL` is empty the build falls back to the offline solo
 stub — the **Multiplayer** menu item is hidden and no signed-data
 network calls are made. This is the safest default for any build that
 needs to pass moderation as a solo-only entry first.
+
+## Yandex signature algorithm (actual, as observed in production)
+
+The Yandex Games SDK docs describe `player.signature` only as "two
+base64-encoded strings separated by `.`" without specifying the layout or
+HMAC details. The real, undocumented format for app 530390 is:
+
+```
+<base64-encoded HMAC-SHA256 signature>.<base64-encoded JSON payload>
+  ^^^                                   ^^^
+  Yandex puts the SIGNATURE first.      Payload is the SECOND half.
+```
+
+Where the JSON payload has shape:
+
+```json
+{
+  "algorithm": "HMAC-SHA256",
+  "issuedAt": <unix-seconds>,
+  "requestPayload": <string>,
+  "data": {
+    "id":         <player uuid>,
+    "uniqueID":   <player uuid (duplicate)>,
+    "lang":       <bcp47>,
+    "publicName": <display name>,
+    "avatarIdHash": <opaque>
+  }
+}
+```
+
+The HMAC-SHA256 is computed with:
+- **key**: the application secret as raw UTF-8 bytes — *not* base64-decoded.
+- **msg**: the **base64-decoded** JSON bytes — *not* the base64 string.
+
+Reference implementation in `server/src/services/auth.ts`:
+
+```ts
+const [sigB64, payloadB64] = signedData.split('.');
+const hmacKey = Buffer.from(YANDEX_APP_SECRET, 'utf-8');
+const payloadRaw = base64UrlToBuffer(payloadB64);
+const expected = crypto.createHmac('sha256', hmacKey).update(payloadRaw).digest();
+const provided = base64UrlToBuffer(sigB64);
+if (!crypto.timingSafeEqual(expected, provided)) reject();
+const { data: { id } } = JSON.parse(payloadRaw.toString('utf-8'));
+```
+
+This was reverse-engineered by capturing a live `player.signature` from
+the production iframe; an earlier implementation that assumed
+`<payload>.<sig>` ordering and base64-decoded the secret silently
+rejected every real signature with `Yandex signature mismatch`.
 
 ## Operational notes
 
