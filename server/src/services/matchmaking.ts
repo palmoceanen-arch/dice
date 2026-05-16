@@ -518,6 +518,55 @@ async function autoStartMatch(
       }
     }
 
+    // Collect every player's equipped dice / table / effect into
+    // `availableItems` so each client can render the *other* players'
+    // skins during throw replays. Without this the client's
+    // `getPlayerDiceConfig` falls back to its own inventory and silently
+    // misses configs for items it doesn't own — the symptom users see
+    // is that opponents' custom dice render as the default white skin
+    // during their throws. We mirror the shape used by
+    // `handlers.handleStartGame` so matchmaking-started games look
+    // identical to manually-started ones on the client.
+    const availableItems: Array<{
+      id: number;
+      type: string;
+      code: string;
+      name: string;
+      config: Record<string, unknown> | null;
+    }> = [];
+    const seenItemIds = new Set<number>();
+    if (lobbyData) {
+      const equippedIds: number[] = [];
+      for (const p of lobbyData.players) {
+        if (p.user.equippedDiceId) equippedIds.push(p.user.equippedDiceId);
+        if (p.user.equippedTableId) equippedIds.push(p.user.equippedTableId);
+        if (p.user.equippedEffectId) equippedIds.push(p.user.equippedEffectId);
+      }
+      for (const itemId of equippedIds) {
+        if (seenItemIds.has(itemId)) continue;
+        seenItemIds.add(itemId);
+        const itemResult = await query<{
+          id: number;
+          type: string;
+          code: string;
+          name: string;
+          config: Record<string, unknown> | string | null;
+        }>(
+          'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
+          [itemId],
+        );
+        const row = itemResult.rows[0];
+        if (!row) continue;
+        availableItems.push({
+          id: row.id,
+          type: row.type,
+          code: row.code,
+          name: row.name,
+          config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
+        });
+      }
+    }
+
     // Build mode-specific data, mirroring handlers.handleStartGame so
     // matchmaking-started games look identical to manually-started ones
     // on the client.
@@ -540,7 +589,7 @@ async function autoStartMatch(
     for (const userId of userIds) {
       connections.send(userId, {
         type: 'game_started',
-        lobby: lobbyData,
+        lobby: { ...lobbyData, availableItems },
         currentTurn,
         playerOrder,
         minAspectRatio,

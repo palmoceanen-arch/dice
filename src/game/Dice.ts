@@ -38,6 +38,25 @@ const DEFAULT_CONFIG: DiceConfig = {
   bevelRadius: 0.16, // Match classic_white preset
 };
 
+// Merge an incoming partial dice config with DEFAULT_CONFIG without
+// letting `undefined` properties overwrite the defaults. The plain
+// `{ ...DEFAULT_CONFIG, ...input }` spread copies even explicitly-
+// `undefined` keys, which means a config like `{ opacity: undefined }`
+// (produced when a preset omits `opacity`) ends up wiping the default
+// `opacity: 1`. That makes THREE log `parameter 'opacity' has value of
+// undefined` and breaks dice rendering for opponents whose dice preset
+// doesn't have every optional field.
+function mergeDiceConfig(input: DiceConfig): DiceConfig {
+  const merged: DiceConfig = { ...DEFAULT_CONFIG };
+  for (const key of Object.keys(input) as (keyof DiceConfig)[]) {
+    const value = input[key];
+    if (value !== undefined) {
+      (merged as Record<string, unknown>)[key as string] = value;
+    }
+  }
+  return merged;
+}
+
 export class Dice {
   mesh: THREE.Mesh;
   body: CANNON.Body;
@@ -60,7 +79,7 @@ export class Dice {
   }
   
   constructor(scene: THREE.Scene, world: CANNON.World, material?: CANNON.Material, config?: DiceConfig, bevelSegments: number = 3) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = config ? mergeDiceConfig(config) : { ...DEFAULT_CONFIG };
     
     const bevelRadius = this.config.bevelRadius;
     const size = Dice.getSizeForBevel(bevelRadius);
@@ -103,7 +122,7 @@ export class Dice {
   // Check if config is different from current (to avoid unnecessary updates)
   private isConfigDifferent(newConfig: DiceConfig): boolean {
     const current = this.config;
-    const merged = { ...DEFAULT_CONFIG, ...newConfig };
+    const merged = mergeDiceConfig(newConfig);
     
     // Compare all relevant properties
     return (
@@ -133,7 +152,7 @@ export class Dice {
     console.log('[Dice] Updating config (config changed)');
     
     const oldBevelRadius = this.config.bevelRadius;
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = mergeDiceConfig(config);
     
     // Recreate geometry if bevelRadius changed
     if (this.config.bevelRadius !== oldBevelRadius) {

@@ -2145,8 +2145,6 @@ export class GameSync {
   
   
   // Helper to get dice config by ID from available items
-  
-  // Helper to get dice config by ID from available items
   private getDiceConfigById(diceId: number, availableItems?: any[]): any | null {
     if (!availableItems) return null;
     
@@ -2156,20 +2154,37 @@ export class GameSync {
     
     if (!diceItem?.config) return null;
     
-    return {
+    // Build the config by copying only properties that are actually
+    // defined. We used to enumerate every supported field explicitly
+    // here, which meant fields the preset omits (e.g. classic_white has
+    // no `opacity` or `dotShape`) ended up as `opacity: undefined` in
+    // the returned object. When that config is later merged into the
+    // dice's `{ ...DEFAULT_CONFIG, ...config }`, the spread overwrites
+    // the defaults with `undefined`, producing THREE warnings and
+    // visually wrong dice (which appears to the user as "other
+    // players' textures don't show up").
+    const result: Record<string, unknown> = {
       baseColor: diceItem.config.baseColor || '#e5e5d7',
       dotColor: diceItem.config.dotColor || '#383838',
       borderColor: diceItem.config.borderColor || '#e5e5d7',
-      roughness: diceItem.config.roughness,
-      metalness: diceItem.config.metalness,
-      clearcoat: diceItem.config.clearcoat,
-      clearcoatRoughness: diceItem.config.clearcoatRoughness,
-      opacity: diceItem.config.opacity,
-      dotSize: diceItem.config.dotSize,
-      dotShape: diceItem.config.dotShape,
-      dotDepth: diceItem.config.dotDepth,
-      bevelRadius: diceItem.config.bevelRadius,
     };
+    const passthrough = [
+      'roughness',
+      'metalness',
+      'clearcoat',
+      'clearcoatRoughness',
+      'opacity',
+      'dotSize',
+      'dotShape',
+      'dotDepth',
+      'bevelRadius',
+    ];
+    for (const key of passthrough) {
+      if (diceItem.config[key] !== undefined) {
+        result[key] = diceItem.config[key];
+      }
+    }
+    return result;
   }
   
   private waitForReplayAndNotify(isMyTurn: boolean) {
