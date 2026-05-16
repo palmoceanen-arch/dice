@@ -19,6 +19,7 @@ import { cloudSave } from './yandex/cloudSave';
 import { SoloUI } from './yandex/SoloUI';
 import { loadYandexAuth } from './yandex/yandexAuth';
 import { BoostsModal } from './ui/BoostsModal';
+import { ReactionWheel } from './ui/ReactionWheel';
 // Bring the multiplayer stub onto window — Game.ts and a few other modules
 // look up `(window as any).wsClient` directly, so the stub must be reachable
 // the same way the real client is in the Telegram build.
@@ -52,6 +53,14 @@ soloUI.mount();
 // stub here — see ./yandex/stubs/WebSocketClient.ts) drive cooldown timers
 // and ad-rewarded activation. The boost button itself is mounted by SoloUI.
 BoostsModal.init();
+
+// Mount the chat / emoji wheel. SoloUI ships a dedicated chat button next
+// to the boost icon that calls `window.reactionWheel.openWheelPublic()`.
+// In solo gameplay it acts as expressive feedback — the user's own emoji
+// pops up in the corner; no server round-trip happens (the stub wsClient
+// ignores unknown `send_reaction` payloads).
+const reactionWheel = new ReactionWheel();
+(window as any).reactionWheel = reactionWheel;
 
 // Sync the boost icon's visibility with the current game mode (the Yandex
 // GameSync stub always reports "not in multiplayer", so on the idle screen

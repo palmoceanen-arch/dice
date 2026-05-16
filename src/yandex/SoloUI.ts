@@ -134,6 +134,27 @@ function ensureStyles(): void {
     #boost-icon:hover { transform: translateX(-50%) scale(1.08); background: rgba(0, 0, 0, 0.75); }
     #boost-icon:active { transform: translateX(-50%) scale(0.95); }
     #boost-icon svg { filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4)); }
+
+    /* Chat / emoji wheel button. Sits a bit to the right of the boost
+       icon at the bottom of the idle screen so both are reachable with
+       one hand on mobile. Opens ReactionWheel.openWheelPublic(). */
+    .yui-chat-btn {
+      position: fixed;
+      bottom: 26px;
+      left: calc(50% + 48px);
+      width: 44px; height: 44px;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.55);
+      border: 0; color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; pointer-events: auto;
+      z-index: 150;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+      transition: transform 0.2s, background 0.2s;
+    }
+    .yui-chat-btn:hover { transform: scale(1.08); background: rgba(0, 0, 0, 0.75); }
+    .yui-chat-btn:active { transform: scale(0.95); }
+    .yui-chat-btn svg { filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4)); }
     @keyframes pulse {
       0%, 100% { transform: translateX(-50%) scale(1); }
       50% { transform: translateX(-50%) scale(1.12); }
@@ -187,6 +208,13 @@ const ICON_BOOST = `
       </linearGradient>
     </defs>
     <path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z" fill="url(#yui-gold)"/>
+  </svg>
+`;
+
+// Speech-bubble glyph for the chat / emoji wheel button.
+const ICON_CHAT = `
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+    <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
   </svg>
 `;
 
@@ -244,6 +272,7 @@ export class SoloUI {
     document.body.appendChild(this.balanceEl);
 
     this.mountBoostButton();
+    this.mountChatButton();
 
     this.renderMenu();
     this.refreshBalance();
@@ -290,6 +319,34 @@ export class SoloUI {
     // toggles, but on first paint that runs before the canvas dimensions
     // are settled, so we show it eagerly here too.
     this.boostButton.style.display = 'flex';
+  }
+
+  /**
+   * Mount the chat / emoji wheel button next to the boost icon. Opens
+   * the shared ReactionWheel that the Telegram build already uses
+   * during multiplayer matches. In the Yandex solo build it surfaces
+   * the same expressive emoji/text reactions during gameplay — they
+   * render as floating messages in the corner via the stub wsClient
+   * (no network traffic).
+   *
+   * main.yandex.ts is responsible for constructing the ReactionWheel
+   * and exposing it as `window.reactionWheel`. We just attach the
+   * trigger here so the button mounts with the rest of SoloUI.
+   */
+  private mountChatButton(): void {
+    const button = document.createElement('button');
+    button.className = 'yui-chat-btn';
+    button.type = 'button';
+    button.setAttribute('aria-label', 'Reactions');
+    button.innerHTML = ICON_CHAT;
+    button.addEventListener('click', () => {
+      haptic.light();
+      const wheel = (window as any).reactionWheel;
+      if (wheel && typeof wheel.openWheelPublic === 'function') {
+        wheel.openWheelPublic();
+      }
+    });
+    document.body.appendChild(button);
   }
 
   private toggleMenu(): void {
