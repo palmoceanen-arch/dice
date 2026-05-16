@@ -74,6 +74,7 @@ const MATCH_FOUND_GRACE_MS = 1_500;
 // How often the queue sweep runs. 1s is plenty — match found events are
 // rare and the sweep is O(n) where n is queued players.
 const SWEEP_INTERVAL_MS = 1_000;
+const QUEUE_TIMEOUT_MS = 90_000;
 
 interface QueueEntry {
   userId: number;
@@ -233,6 +234,8 @@ function queueSizeForMode(mode: QueueMode): number {
 function sweep(): void {
   if (queue.size === 0) return;
   const now = Date.now();
+  expireTimedOutEntries(now);
+  if (queue.size === 0) return;
 
   // --- Duels ---------------------------------------------------------
   const duelEntries = Array.from(queue.values())
@@ -297,13 +300,25 @@ function sweep(): void {
   }
 }
 
+function expireTimedOutEntries(now: number): void {
+  for (const entry of queue.values()) {
+    if (now - entry.enqueuedAt < QUEUE_TIMEOUT_MS) continue;
+    queue.delete(entry.userId);
+    connections.send(entry.userId, {
+      type: 'mm_error',
+      code: 'timeout',
+      message: 'Matchmaking timed out. Try another bet or mode.',
+    });
+  }
+}
+
 async function startMatch(host: QueueEntry, others: QueueEntry[]): Promise<void> {
   const allUserIds = [host.userId, ...others.map((o) => o.userId)];
   const betAmount = host.betAmount;
   const noBet = betAmount === 0;
 
   try {
-    const created = await lobby.createLobby(host.userId, host.gameMode, noBet);
+    const created = await lobby.createLobby(host.userId, host.gameMode, noBet, betAmount);
     const lobbyId = created.id;
 
     // Add the other matched players. If any of them have since

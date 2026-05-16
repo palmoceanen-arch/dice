@@ -114,6 +114,7 @@ export const en = {
     searchingAny: 'Searching for {min}–{max} players…',
     matchFound: 'Match found!',
     matchFailed: 'Could not find a match',
+    searchTimedOut: 'Search timed out. Try another bet or mode.',
     modeDuel: '1×1',
     modeDuelSub: 'Duel · two players',
     modeAny: 'Any',

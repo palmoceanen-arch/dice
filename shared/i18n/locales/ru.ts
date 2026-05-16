@@ -116,6 +116,7 @@ export const ru: TranslationKeys = {
     searchingAny: 'Ищем {min}–{max} игроков…',
     matchFound: 'Соперник найден!',
     matchFailed: 'Не удалось найти соперника',
+    searchTimedOut: 'Поиск истёк. Попробуйте другую ставку или режим.',
     modeDuel: '1×1',
     modeDuelSub: 'Дуэль · два игрока',
     modeAny: 'Любой',

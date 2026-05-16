@@ -62,6 +62,7 @@ const ALLOWED_BETS: ReadonlyArray<number> = [0, 10, 50, 100, 500];
 
 interface LobbyPlayer {
   oderId?: number;
+  userId?: number;
   nickname?: string;
   avatarUrl?: string | null;
   user?: { nickname?: string; avatarUrl?: string | null };
@@ -74,6 +75,8 @@ interface LobbyShape {
   status: 'voting' | 'waiting' | 'playing' | 'finished';
   selectedTableId: number | null;
   maxPlayers: number;
+  noBet?: boolean;
+  betAmount?: number;
   players: LobbyPlayer[];
 }
 
@@ -426,6 +429,9 @@ export class MultiplayerLobbyUI {
   }
 
   close(): void {
+    if (this.stage === 'searching') {
+      this.cancelQuickPlay();
+    }
     this.overlay.classList.remove('open');
     this.detachWsHandlers();
   }
@@ -561,7 +567,10 @@ export class MultiplayerLobbyUI {
   }
 
   private handleMmError(message: any): void {
-    const text = (message && (message.message || message.code)) || 'Match failed';
+    const code = typeof message?.code === 'string' ? message.code : '';
+    const text = code === 'timeout'
+      ? t('multiplayer.searchTimedOut') || l('Search timed out. Try another bet or mode.', 'Поиск истёк. Попробуйте другую ставку или режим.')
+      : (message && (message.message || message.code)) || 'Match failed';
     this.errorText = String(text);
     this.infoText = null;
     if (this.stage === 'searching') {
@@ -1134,9 +1143,14 @@ export class MultiplayerLobbyUI {
       this.renderHome();
       return;
     }
-    const c = wsClient as any;
-    const myUserId: number | undefined = c.user?.id;
+    const c = wsClient as { user?: { id?: number } };
+    const myUserId = c.user?.id;
     const isHost = !!myUserId && lobby.hostId === myUserId;
+    const betAmount = typeof lobby.betAmount === 'number' ? lobby.betAmount : lobby.noBet ? 0 : 10;
+    const betInfo = formatBet(betAmount);
+    const betLabel = betAmount === 0
+      ? escapeHtml(t('multiplayer.noBet') || 'No bet')
+      : `${escapeHtml(t('multiplayer.betAmount') || 'Bet')}: <b>${escapeHtml(betInfo.amount)}</b>`;
     const modeLabel =
       (MODE_LABELS as Record<string, { name: string }>)[lobby.gameMode]?.name ??
       lobby.gameMode;
@@ -1145,11 +1159,9 @@ export class MultiplayerLobbyUI {
         const nick =
           p.nickname || p.user?.nickname || `Player ${p.oderId ?? '?'}`;
         const avatar = p.avatarUrl || p.user?.avatarUrl || '';
-        const isYou =
-          myUserId && (p as any).userId
-            ? (p as any).userId === myUserId
-            : false;
-        const isHostPlayer = (p as any).userId === lobby.hostId;
+        const playerId = p.userId ?? p.oderId;
+        const isYou = playerId === myUserId;
+        const isHostPlayer = playerId === lobby.hostId;
         const badge = isHostPlayer
           ? `<span class="badge">${escapeHtml(t('multiplayer.host') || 'host')}</span>`
           : isYou
@@ -1181,6 +1193,7 @@ export class MultiplayerLobbyUI {
       <div class="ymp-code-display" title="Lobby code">
         ${escapeHtml(lobby.id)}
       </div>
+      <div class="ymp-help" style="text-align:center">${betLabel}</div>
       <div class="ymp-row">
         <button class="ymp-btn ghost" data-act="copy-code">
           ${escapeHtml(t('multiplayer.copy') || 'Copy code')}

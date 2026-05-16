@@ -41,10 +41,10 @@ const migrations = [
      END IF;
    END$$`,
 
-  // Per-lobby "no betting" flag. Yandex Games lobbies are created with
-  // no_bet=true so the in-round BettingManager flow is bypassed and the
-  // game-end payout is a fixed pip reward to the winner(s).
+  // Per-lobby no-bet flag and fixed stake used by Yandex lobby creation
+  // and quick-play matchmaking.
   `ALTER TABLE lobbies ADD COLUMN IF NOT EXISTS no_bet BOOLEAN NOT NULL DEFAULT FALSE`,
+  `ALTER TABLE lobbies ADD COLUMN IF NOT EXISTS bet_amount INTEGER NOT NULL DEFAULT 10`,
 
   // Player progression / matchmaking stats. Used by the Yandex Games build
   // to power the quick-play matchmaking queue (level-banded matching) and

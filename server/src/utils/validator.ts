@@ -125,6 +125,14 @@ const GetReferralListSchema = z.object({
   type: z.literal('get_referral_list'),
 });
 
+// Bet amounts allowed in Yandex create-lobby and matchmaking flows.
+const MmBetAmountSchema = z
+  .number()
+  .int()
+  .refine((n) => [0, 10, 50, 100, 500].includes(n), {
+    message: 'Bet amount must be one of 0 / 10 / 50 / 100 / 500',
+  });
+
 const CreateLobbySchema = z.object({
   type: z.literal('create_lobby'),
   gameMode: GameModeSchema,
@@ -363,15 +371,6 @@ const CancelBetSchema = z.object({
 });
 
 // === Matchmaking schemas ===
-
-// Bet amounts allowed at queue join. Mirrors `ALLOWED_BETS` in
-// `services/matchmaking.ts` — keep in sync.
-const MmBetAmountSchema = z
-  .number()
-  .int()
-  .refine((n) => [0, 10, 50, 100, 500].includes(n), {
-    message: 'Bet amount must be one of 0 / 10 / 50 / 100 / 500',
-  });
 
 const MmJoinQueueSchema = z.object({
   type: z.literal('mm_join_queue'),

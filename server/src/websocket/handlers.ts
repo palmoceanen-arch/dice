@@ -717,11 +717,16 @@ async function handleCreateLobby(
     return;
   }
 
+  if (matchmaking.isQueued(userId)) {
+    matchmaking.leaveQueue(userId);
+  }
+
   // `bet === 0` (and the legacy `noBet: true` path) opt into the no-bet
   // lobby flavour; any positive value or `undefined` keeps the regular
   // betting flow.
   const noBet = bet === 0;
-  const newLobby = await lobby.createLobby(userId, gameMode, noBet);
+  const betAmount = noBet ? 0 : bet ?? 10;
+  const newLobby = await lobby.createLobby(userId, gameMode, noBet, betAmount);
   metricsCollector.lobbyCreated();
   
   // Store screen size
@@ -744,6 +749,10 @@ async function handleCreateLobby(
 }
 
 async function handleJoinLobby(userId: number, lobbyId: string, screenWidth?: number, screenHeight?: number): Promise<void> {
+  if (matchmaking.isQueued(userId)) {
+    matchmaking.leaveQueue(userId);
+  }
+
   const success = await lobby.joinLobby(lobbyId, userId);
   
   if (success) {
@@ -762,7 +771,7 @@ async function handleJoinLobby(userId: number, lobbyId: string, screenWidth?: nu
       lobbyData.players.length >= 2
     ) {
       if (!BettingManager.isActive(lobbyId)) {
-        BettingManager.initialize(lobbyId, 10);
+        BettingManager.initialize(lobbyId, lobby.getLobbyBetAmount(lobbyId));
         logger.info('[BETTING] Initialized for lobby', { lobbyId, playerCount: lobbyData.players.length });
       }
     }
@@ -1244,7 +1253,7 @@ async function handleRestartGame(userId: number): Promise<void> {
   
   if (playerIds.length >= 2) {
     // Initialize betting for new game
-    BettingManager.initialize(conn.lobbyId, 10);
+    BettingManager.initialize(conn.lobbyId, lobby.getLobbyBetAmount(conn.lobbyId));
     logger.info('[BETTING] Initialized for restart', { lobbyId: conn.lobbyId, playerCount: playerIds.length });
     
     // Show betting UI to all players with their balances
