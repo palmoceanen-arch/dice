@@ -130,9 +130,14 @@ const CreateLobbySchema = z.object({
   gameMode: GameModeSchema,
   screenWidth: z.number().int().positive().max(10000).optional(),
   screenHeight: z.number().int().positive().max(10000).optional(),
-  // Set by the Yandex Games build so the in-round BettingManager flow is
-  // skipped and the game-end payout becomes a fixed pip prize for the
-  // winner(s). Defaults to false for backwards compatibility (Telegram).
+  // Per-player stake in pips. `0` is treated as a no-bet lobby (the
+  // server skips the in-round BettingManager flow and awards a fixed
+  // pip prize to the winner(s)). The set of allowed amounts is
+  // `MmBetAmountSchema` — kept in lockstep with the matchmaking queue
+  // and the UI chip buttons.
+  bet: MmBetAmountSchema.optional(),
+  // Legacy flag for Telegram callsites that haven't been migrated. New
+  // code should use `bet: 0` instead. Defaults to false.
   noBet: z.boolean().optional(),
 });
 
@@ -357,6 +362,34 @@ const CancelBetSchema = z.object({
   type: z.literal('cancel_bet'),
 });
 
+// === Matchmaking schemas ===
+
+// Bet amounts allowed at queue join. Mirrors `ALLOWED_BETS` in
+// `services/matchmaking.ts` — keep in sync.
+const MmBetAmountSchema = z
+  .number()
+  .int()
+  .refine((n) => [0, 10, 50, 100, 500].includes(n), {
+    message: 'Bet amount must be one of 0 / 10 / 50 / 100 / 500',
+  });
+
+const MmJoinQueueSchema = z.object({
+  type: z.literal('mm_join_queue'),
+  mode: z.enum(['duel', 'any']),
+  betAmount: MmBetAmountSchema,
+  // Reserved for future "let me pick the mode" UI. The default
+  // `poker_dice` (Palmo's Dice) is enforced server-side if omitted.
+  gameMode: GameModeSchema.optional(),
+});
+
+const MmLeaveQueueSchema = z.object({
+  type: z.literal('mm_leave_queue'),
+});
+
+const GetPlayerStatsSchema = z.object({
+  type: z.literal('get_player_stats'),
+});
+
 // === Client ping (for connection check) ===
 
 const ClientPingSchema = z.object({
@@ -410,6 +443,9 @@ const MessageSchemas = {
   place_bet: PlaceBetSchema,
   confirm_bet: ConfirmBetSchema,
   cancel_bet: CancelBetSchema,
+  mm_join_queue: MmJoinQueueSchema,
+  mm_leave_queue: MmLeaveQueueSchema,
+  get_player_stats: GetPlayerStatsSchema,
   _client_ping: ClientPingSchema,
 } as const;
 

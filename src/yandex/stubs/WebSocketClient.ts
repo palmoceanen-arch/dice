@@ -225,20 +225,11 @@ class YandexLiveWSClient extends WebSocketClient {
     return cloudSave.getEquippedTableConfig();
   }
 
-  // Yandex Games builds always create no-bet lobbies — real-money / pip
-  // staking is not permitted on the portal. The server skips the betting
-  // UI and awards a fixed pip prize to the winner(s) instead.
-  override createLobby(
-    gameMode: 'free_roll' | 'street_craps' | 'mexico' | 'greedy_pig' | 'poker_dice',
-  ): void {
-    this.send({
-      type: 'create_lobby',
-      gameMode,
-      screenWidth: window.innerWidth,
-      screenHeight: window.innerHeight,
-      noBet: true,
-    });
-  }
+  // `createLobby(gameMode, bet)`, `joinQueue(mode, betAmount, gameMode?)`,
+  // `leaveQueue()` and `getPlayerStats()` are inherited verbatim from the
+  // canonical `multiplayer/WebSocketClient`. The Yandex Games build uses the
+  // same protocol — `bet === 0` opts into a no-bet lobby, anything else is a
+  // regular betting lobby. The lobby UI is responsible for the bet picker.
 }
 
 function makeClient(): StubWebSocketClient | YandexLiveWSClient {

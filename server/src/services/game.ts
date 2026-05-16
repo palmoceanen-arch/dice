@@ -3,6 +3,7 @@ import type { GameMode } from '../types/index.js';
 import * as lobby from './lobby.js';
 import { BettingManager } from './betting.js';
 import { metricsCollector } from '../utils/metrics.js';
+import { recordGameResult } from './stats.js';
 import {
   type GameState,
   type RollResult,
@@ -251,12 +252,14 @@ const NO_BET_WINNER_PIPS = 100;
 export async function endGame(lobbyId: string): Promise<Map<number, number> | null> {
   const state = activeGames.get(lobbyId);
   let payouts: Map<number, number> | null = null;
+  let winnerIds: number[] = [];
 
   // Resolve bets if betting is active
   if (state && BettingManager.isActive(lobbyId)) {
     const handler = getGameMode(state.gameMode);
     if (handler) {
       const winners = handler.getWinners(state);
+      winnerIds = winners;
       const result = await BettingManager.resolve(lobbyId, winners);
       if (result.success && result.payouts) {
         payouts = result.payouts;
@@ -269,6 +272,7 @@ export async function endGame(lobbyId: string): Promise<Map<number, number> | nu
     const handler = getGameMode(state.gameMode);
     if (handler) {
       const winners = handler.getWinners(state);
+      winnerIds = winners;
       if (winners.length > 0) {
         payouts = new Map();
         for (const winnerId of winners) {
@@ -284,8 +288,33 @@ export async function endGame(lobbyId: string): Promise<Map<number, number> | nu
         }
       }
     }
+  } else if (state) {
+    // Fallback for any future lobby flavour: still capture the winner
+    // list so matchmaking stats (xp / level / W-L) update correctly.
+    const handler = getGameMode(state.gameMode);
+    if (handler) {
+      winnerIds = handler.getWinners(state);
+    }
   }
-  
+
+  // Record matchmaking stats (xp / level / wins / losses / games_played)
+  // for every player that participated. `recordGameResult` is
+  // best-effort and never throws — failures are logged inside the
+  // service. Solo (<2 players) is filtered there as well.
+  if (state) {
+    const winnerSet = new Set(winnerIds);
+    const totalPlayers = state.playerOrder.length;
+    for (const playerId of state.playerOrder) {
+      recordGameResult({
+        userId: playerId,
+        won: winnerSet.has(playerId),
+        totalPlayers,
+      }).catch(err => {
+        console.error('Failed to record game result:', err);
+      });
+    }
+  }
+
   // Increment games played for all players (for referral tracking)
   if (state) {
     for (const playerId of state.playerOrder) {

@@ -562,13 +562,44 @@ export class WebSocketClient {
   }
   
   // API methods - Lobby
-  createLobby(gameMode: 'free_roll' | 'street_craps' | 'mexico' | 'greedy_pig' | 'poker_dice') {
-    this.send({ 
-      type: 'create_lobby', 
+  //
+  // `bet` is the per-player stake in pips. `0` means a no-bet lobby (Yandex
+  // Games and any other case where the host wants to skip the betting flow).
+  // Telegram callsites that don't pass it keep the legacy behaviour (the
+  // server defaults to a regular betting lobby) so this is backwards
+  // compatible.
+  createLobby(
+    gameMode: 'free_roll' | 'street_craps' | 'mexico' | 'greedy_pig' | 'poker_dice',
+    bet?: number,
+  ) {
+    this.send({
+      type: 'create_lobby',
       gameMode,
+      bet,
       screenWidth: window.innerWidth,
-      screenHeight: window.innerHeight
+      screenHeight: window.innerHeight,
     });
+  }
+
+  // API methods - Matchmaking (Yandex quick-play)
+  //
+  // The matchmaking queue is server-side: the client just announces its
+  // preferred mode/bet and listens for `mm_queued` / `mm_match_found` /
+  // `mm_match_failed`.
+  joinQueue(
+    mode: 'duel' | 'any',
+    betAmount: number,
+    gameMode?: 'free_roll' | 'street_craps' | 'mexico' | 'greedy_pig' | 'poker_dice',
+  ) {
+    this.send({ type: 'mm_join_queue', mode, betAmount, gameMode });
+  }
+
+  leaveQueue() {
+    this.send({ type: 'mm_leave_queue' });
+  }
+
+  getPlayerStats() {
+    this.send({ type: 'get_player_stats' });
   }
   
   joinLobby(lobbyId: string) {

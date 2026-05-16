@@ -1,35 +1,45 @@
-// Minimal multiplayer lobby UI for the Yandex Games build.
+// Multiplayer lobby UI for the Yandex Games build.
 //
 // Telegram's MultiplayerUI uses a friends list, Telegram share-links and
 // "invite by Telegram ID" flows that are unavailable inside Yandex Games.
-// In the Yandex environment every player joins by typing (or pasting) the
-// 8-character lobby code that the host shares however they like (the game's
-// own clipboard "copy" button, Yandex's share feature, a chat outside the
-// portal, etc.).
+// The Yandex build has its own minimal UI that supports three flows:
+//
+//   1. Quick play — server-side matchmaking. Pick a queue mode (1×1 duel
+//      or "Any" 3–5 player group) and a bet, the server pairs you with
+//      compatible opponents and we land directly in an in-lobby view.
+//   2. Create lobby — pick a game mode, then a bet, get an 8-character
+//      lobby code to share. Other players join by typing the code.
+//   3. Join by code — paste the 8-character code from a friend.
+//
+// Bets are real pips on the Yandex build (the user explicitly asked for
+// betting parity with Telegram). Bet amounts come from the
+// `ALLOWED_BETS` allow-list, mirrored on the server in
+// `services/matchmaking.ts`. The "0" chip is the no-bet flavour (winner
+// gets a fixed pip prize, no in-round BettingManager flow).
 //
 // State machine of the modal:
 //
-//   HOME    -> CREATE | JOIN
-//   CREATE  -> waits for `lobby_created` -> IN_LOBBY
-//   JOIN    -> waits for `lobby_joined`  -> IN_LOBBY
-//   IN_LOBBY -> host can press Start; everyone gets `game_started` and the
-//               modal closes (gameplay continues in Game.ts).
+//   HOME      -> QUICK_PLAY | CREATE | JOIN
+//   QUICK_PLAY -> SEARCHING  -> IN_LOBBY (via `mm_match_found`)
+//   CREATE    -> CREATE_BET  -> IN_LOBBY (via `lobby_created`)
+//   JOIN      -> IN_LOBBY                (via `lobby_joined`)
+//   IN_LOBBY  -> host can press Start; everyone gets `game_started` and
+//               the modal closes (gameplay continues in Game.ts).
 //
-// The class is intentionally a flat "render the whole modal on every state
-// change" affair. It is a few hundred lines and easy to audit; we explicitly
-// did not try to share rendering code with the 2900-line Telegram
-// MultiplayerUI.
+// The class is intentionally a flat "render the whole modal on every
+// state change" affair. It is a few hundred lines and easy to audit; we
+// explicitly did not try to share rendering code with the 2900-line
+// Telegram MultiplayerUI.
 
 import { wsClient } from './stubs/WebSocketClient';
 import { haptic } from './platform';
 import { t, getCurrentLanguage } from '../../shared/i18n';
 
 // Tiny localization fallback. The Yandex lobby reaches keys (e.g.
-// `multiplayer.title`) that are added in a separate i18n PR; until that PR
-// lands `t()` returns the raw key, so `t() || fallback` never fires. Pick a
-// language-specific literal directly so the editor copy is sane in either
-// build state. Mirrors the Russian/English split the rest of the catalog
-// uses.
+// `multiplayer.title`) defined in `shared/i18n/locales/*.ts`. If a key
+// is ever missing `t()` returns the raw key, so this helper picks a
+// language-specific literal for anything we want to render even with a
+// stale catalog.
 function l(en: string, ru: string): string {
   return getCurrentLanguage() === 'ru' ? ru : en;
 }
@@ -43,6 +53,12 @@ const NICKNAME_MIN = 3;
 const NICKNAME_MAX = 32;
 
 type GameMode = 'street_craps' | 'mexico' | 'greedy_pig' | 'poker_dice';
+type QueueMode = 'duel' | 'any';
+
+// Mirrors `ALLOWED_BETS` in `server/src/services/matchmaking.ts`. Anything
+// outside this list is rejected by the queue / create-lobby handlers, so
+// keep both ends in lockstep when adding a chip.
+const ALLOWED_BETS: ReadonlyArray<number> = [0, 10, 50, 100, 500];
 
 interface LobbyPlayer {
   oderId?: number;
@@ -61,11 +77,36 @@ interface LobbyShape {
   players: LobbyPlayer[];
 }
 
-type Stage = 'home' | 'create' | 'join' | 'in_lobby' | 'busy';
+interface PlayerStatsShape {
+  xp: number;
+  level: number;
+  gamesPlayed: number;
+  wins: number;
+  losses: number;
+  pips: number;
+}
+
+type Stage =
+  | 'home'
+  | 'quick_play'
+  | 'searching'
+  | 'create'
+  | 'create_bet'
+  | 'join'
+  | 'in_lobby'
+  | 'busy';
 
 type InfoKind = 'err' | 'ok';
 
 const STYLE_ID = 'yandex-mp-lobby-style';
+
+// Cumulative XP required to reach `level`. Matches
+// `server/src/services/stats.ts:xpForLevel` so the progress bar lines
+// up with what the server uses to compute the level.
+function xpForLevel(level: number): number {
+  if (level <= 1) return 0;
+  return 50 * level * (level - 1);
+}
 
 function ensureStyles(): void {
   if (document.getElementById(STYLE_ID)) return;
@@ -114,6 +155,7 @@ function ensureStyles(): void {
       transition: background 0.15s;
     }
     .ymp-mode-card:hover { background: rgba(255,255,255,0.12); }
+    .ymp-mode-card.active { background: rgba(255,216,77,0.18); outline: 1px solid rgba(255,216,77,0.4); }
     .ymp-mode-card .name { font-weight: 700; font-size: 14px; }
     .ymp-mode-card .sub  { font-size: 12px; opacity: 0.7; margin-top: 2px; }
 
@@ -177,6 +219,86 @@ function ensureStyles(): void {
       font-family: inherit; font-size: 14px; min-width: 0;
     }
     .ymp-input::placeholder { color: rgba(255,255,255,0.4); }
+
+    /* --- Profile widget --- */
+    .ymp-profile {
+      display: flex; flex-direction: column; gap: 8px;
+      padding: 12px 14px; border-radius: 12px;
+      background: rgba(255,255,255,0.05);
+    }
+    .ymp-profile .row1 {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px;
+    }
+    .ymp-profile .level-pill {
+      font-size: 11px; font-weight: 700;
+      padding: 4px 10px; border-radius: 99px;
+      background: rgba(255,216,77,0.2); color: #ffd84d;
+      letter-spacing: 0.3px;
+    }
+    .ymp-profile .pips {
+      font-weight: 700; font-size: 14px; color: #ffd84d;
+      display: inline-flex; align-items: center; gap: 4px;
+    }
+    .ymp-profile .pips::before { content: '◈'; }
+    .ymp-profile .xpbar {
+      position: relative; height: 6px; border-radius: 99px;
+      background: rgba(255,255,255,0.08); overflow: hidden;
+    }
+    .ymp-profile .xpbar > span {
+      position: absolute; inset: 0 auto 0 0;
+      background: linear-gradient(90deg, #ffd84d 0%, #ffb340 100%);
+      border-radius: 99px;
+    }
+    .ymp-profile .xp-text {
+      display: flex; justify-content: space-between;
+      font-size: 11px; opacity: 0.65;
+    }
+    .ymp-profile .stats {
+      display: flex; gap: 12px; font-size: 12px;
+      opacity: 0.8; flex-wrap: wrap;
+    }
+    .ymp-profile .stats b { color: #fff; font-weight: 700; }
+
+    /* --- Bet chip selector --- */
+    .ymp-bet-row {
+      display: flex; flex-wrap: wrap; gap: 8px;
+    }
+    .ymp-chip {
+      flex: 1 0 calc(33% - 8px);
+      padding: 12px 8px; border-radius: 10px; border: 0;
+      cursor: pointer;
+      background: rgba(255,255,255,0.08); color: #fff;
+      font-family: inherit; font-weight: 700; font-size: 14px;
+      display: flex; flex-direction: column; align-items: center; gap: 2px;
+      transition: background 0.15s, outline 0.15s;
+    }
+    .ymp-chip:hover { background: rgba(255,255,255,0.14); }
+    .ymp-chip.active {
+      background: rgba(255,216,77,0.22);
+      outline: 1px solid rgba(255,216,77,0.6);
+      color: #ffd84d;
+    }
+    .ymp-chip[disabled] { opacity: 0.4; cursor: default; }
+    .ymp-chip .amount { font-size: 16px; }
+    .ymp-chip .amount.zero { color: #7be58a; }
+    .ymp-chip .label { font-size: 10px; opacity: 0.7; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+
+    .ymp-help {
+      font-size: 12px; opacity: 0.7; line-height: 1.4;
+    }
+    .ymp-help b { opacity: 0.95; color: #ffd84d; }
+
+    /* --- Searching spinner --- */
+    .ymp-spinner {
+      width: 28px; height: 28px;
+      border: 3px solid rgba(255,255,255,0.15);
+      border-top-color: #ffd84d;
+      border-radius: 50%;
+      animation: ymp-spin 0.9s linear infinite;
+      margin: 0 auto;
+    }
+    @keyframes ymp-spin { to { transform: rotate(360deg); } }
   `;
   document.head.appendChild(style);
 }
@@ -197,12 +319,11 @@ function escapeHtml(s: string): string {
 // Display labels match the codebase's shared i18n catalog
 // (shared/i18n/locales/*.ts). `poker_dice` is rendered as "Palmo's Dice"
 // because the server's `poker_dice` registration points at the Palmo's
-// Dice mode handler (palmosDice.ts → name: 'poker_dice'). Players win a
-// fixed pip prize at game-end — no betting on the Yandex Games build.
+// Dice mode handler (palmosDice.ts → name: 'poker_dice').
 const MODE_LABELS: Record<GameMode, { name: string; sub: string }> = {
   poker_dice: {
     name: "Palmo's Dice",
-    sub: '2–4 players · winner gets fixed pips',
+    sub: '2–4 players · poker-style dice',
   },
   street_craps: {
     name: 'Street Craps',
@@ -210,13 +331,31 @@ const MODE_LABELS: Record<GameMode, { name: string; sub: string }> = {
   },
   mexico: {
     name: 'Mexico',
-    sub: '2–4 players · winner gets fixed pips',
+    sub: '2–4 players · bluff & roll',
   },
   greedy_pig: {
     name: 'Greedy Pig',
-    sub: '2–4 players · winner gets fixed pips',
+    sub: '2–4 players · press your luck',
   },
 };
+
+// Format a bet amount for the chip button. `0` is rendered as "Free" /
+// "Без ставки" because pips are positive integers and "0 pips" reads as
+// awkward.
+function formatBet(amount: number): { amount: string; label: string; isFree: boolean } {
+  if (amount === 0) {
+    return {
+      amount: '✦',
+      label: l('Free', 'Без ставки'),
+      isFree: true,
+    };
+  }
+  return {
+    amount: String(amount),
+    label: l('pips', 'очк.'),
+    isFree: false,
+  };
+}
 
 export class MultiplayerLobbyUI {
   private panel!: HTMLDivElement;
@@ -228,6 +367,16 @@ export class MultiplayerLobbyUI {
   private infoKind: InfoKind = 'err';
   private mounted = false;
 
+  // Selected values held across the multi-step Quick Play / Create
+  // flows. Reset on `open()`.
+  private selectedQueueMode: QueueMode = 'duel';
+  private selectedBet: number = 0;
+  private pendingCreateMode: GameMode | null = null;
+
+  // Latest player stats snapshot, fetched on open and refreshed on
+  // every `stats_updated` push. `null` means "haven't loaded yet".
+  private stats: PlayerStatsShape | null = null;
+
   // Bound handler refs so we can `off()` them on close (we re-attach on open).
   private readonly onLobbyCreated = (m: any) => this.handleLobbyEvent(m, 'created');
   private readonly onLobbyJoined  = (m: any) => this.handleLobbyEvent(m, 'joined');
@@ -237,6 +386,12 @@ export class MultiplayerLobbyUI {
   private readonly onError        = (m: any) => this.handleLobbyError(m);
   private readonly onGameStarted  = ()       => this.handleGameStarted();
   private readonly onNicknameChanged = (m: any) => this.handleNicknameChanged(m);
+  private readonly onMmQueued     = (m: any) => this.handleMmQueued(m);
+  private readonly onMmLeft       = ()       => this.handleMmLeft();
+  private readonly onMmMatchFound = (m: any) => this.handleMmMatchFound(m);
+  private readonly onMmError      = (m: any) => this.handleMmError(m);
+  private readonly onPlayerStats  = (m: any) => this.handlePlayerStats(m);
+  private readonly onStatsUpdated = (m: any) => this.handlePlayerStats(m);
 
   mount(): void {
     if (this.mounted) return;
@@ -261,8 +416,13 @@ export class MultiplayerLobbyUI {
     this.stage = this.currentLobby ? 'in_lobby' : 'home';
     this.errorText = null;
     this.infoText = null;
+    this.pendingCreateMode = null;
     this.overlay.classList.add('open');
     this.render();
+    // Refresh the profile widget every time the modal opens. The
+    // initial `null` keeps the existing render path simple — we just
+    // hide the widget until we have data.
+    this.requestPlayerStats();
   }
 
   close(): void {
@@ -281,6 +441,12 @@ export class MultiplayerLobbyUI {
     c.on('error',             this.onError);
     c.on('game_started',      this.onGameStarted);
     c.on('nickname_changed',  this.onNicknameChanged);
+    c.on('mm_queued',         this.onMmQueued);
+    c.on('mm_left',           this.onMmLeft);
+    c.on('mm_match_found',    this.onMmMatchFound);
+    c.on('mm_error',          this.onMmError);
+    c.on('player_stats',      this.onPlayerStats);
+    c.on('stats_updated',     this.onStatsUpdated);
   }
 
   private detachWsHandlers(): void {
@@ -294,6 +460,20 @@ export class MultiplayerLobbyUI {
     c.off('error',             this.onError);
     c.off('game_started',      this.onGameStarted);
     c.off('nickname_changed',  this.onNicknameChanged);
+    c.off('mm_queued',         this.onMmQueued);
+    c.off('mm_left',           this.onMmLeft);
+    c.off('mm_match_found',    this.onMmMatchFound);
+    c.off('mm_error',          this.onMmError);
+    c.off('player_stats',      this.onPlayerStats);
+    c.off('stats_updated',     this.onStatsUpdated);
+  }
+
+  private requestPlayerStats(): void {
+    const c = wsClient as any;
+    if (!c.isConnected) return;
+    if (typeof c.getPlayerStats === 'function') {
+      try { c.getPlayerStats(); } catch { /* swallow — best-effort */ }
+    }
   }
 
   private handleLobbyEvent(message: any, _kind: 'created' | 'joined' | 'state'): void {
@@ -315,14 +495,16 @@ export class MultiplayerLobbyUI {
     const text = (message && (message.message || message.reason)) || 'Unknown error';
     this.errorText = String(text);
     this.infoText = null;
-    if (this.stage === 'busy') this.stage = this.currentLobby ? 'in_lobby' : 'home';
+    if (this.stage === 'busy' || this.stage === 'searching') {
+      this.stage = this.currentLobby ? 'in_lobby' : 'home';
+    }
     this.render();
   }
 
   private handleNicknameChanged(message: any): void {
     // Server confirmed the rename. Mirror the change on the local user
-    // snapshot so subsequent renders (lobby player list, etc.) pick up the
-    // new value without waiting for a reconnect.
+    // snapshot so subsequent renders (lobby player list, etc.) pick up
+    // the new value without waiting for a reconnect.
     const c = wsClient as any;
     if (c.user && typeof message?.nickname === 'string') {
       c.user.nickname = message.nickname;
@@ -340,10 +522,122 @@ export class MultiplayerLobbyUI {
     this.close();
   }
 
+  private handleMmQueued(_message: any): void {
+    // Server confirmed we're in the queue. Switch to the spinner
+    // screen. The actual transition to in-lobby happens via
+    // `mm_match_found`.
+    this.stage = 'searching';
+    this.errorText = null;
+    this.render();
+  }
+
+  private handleMmLeft(): void {
+    if (this.stage === 'searching') {
+      this.stage = 'home';
+      this.render();
+    }
+  }
+
+  private handleMmMatchFound(message: any): void {
+    // The server also pushes `lobby_created` / `lobby_joined` shortly
+    // after, but we don't want to leave the user staring at "searching"
+    // in the meantime. Render the lobby straight away.
+    if (message?.lobby) {
+      this.currentLobby = message.lobby as LobbyShape;
+    }
+    this.stage = 'in_lobby';
+    this.errorText = null;
+    this.infoText = t('multiplayer.matchFound') || l('Match found!', 'Соперник найден!');
+    this.infoKind = 'ok';
+    this.render();
+    // Clear the "match found!" toast after a beat so it doesn't linger
+    // through the actual game start.
+    setTimeout(() => {
+      if (this.infoKind === 'ok' && this.stage === 'in_lobby') {
+        this.infoText = null;
+        this.render();
+      }
+    }, 1500);
+  }
+
+  private handleMmError(message: any): void {
+    const text = (message && (message.message || message.code)) || 'Match failed';
+    this.errorText = String(text);
+    this.infoText = null;
+    if (this.stage === 'searching') {
+      this.stage = 'quick_play';
+    }
+    this.render();
+  }
+
+  private handlePlayerStats(message: any): void {
+    const raw = message?.stats;
+    if (!raw || typeof raw !== 'object') return;
+    this.stats = {
+      xp: Number(raw.xp) || 0,
+      level: Math.max(1, Number(raw.level) || 1),
+      gamesPlayed: Number(raw.gamesPlayed) || 0,
+      wins: Number(raw.wins) || 0,
+      losses: Number(raw.losses) || 0,
+      pips: Number(raw.pips) || 0,
+    };
+    // Mirror the pip balance onto wsClient.user so the bet picker can
+    // disable chips the player can't afford without an extra request.
+    const c = wsClient as any;
+    if (c.user) c.user.pips = this.stats.pips;
+    if (this.stage === 'home' || this.stage === 'quick_play' || this.stage === 'create_bet') {
+      this.render();
+    }
+  }
+
   // -- actions --
 
-  private startCreate(mode: GameMode): void {
+  private startQuickPlay(mode: QueueMode, bet: number): void {
     if (!this.isConnected()) return;
+    if (bet > 0 && this.stats && this.stats.pips < bet) {
+      this.errorText = t('multiplayer.notEnoughPips') ||
+        l('Not enough pips for this bet', 'Недостаточно очков для этой ставки');
+      this.render();
+      return;
+    }
+    this.stage = 'searching';
+    this.errorText = null;
+    this.render();
+    haptic.light();
+    try {
+      const c = wsClient as any;
+      if (typeof c.joinQueue === 'function') {
+        c.joinQueue(mode, bet);
+      } else {
+        this.errorText = 'Matchmaking not available on this build';
+        this.stage = 'quick_play';
+        this.render();
+      }
+    } catch (e) {
+      this.errorText = e instanceof Error ? e.message : String(e);
+      this.stage = 'quick_play';
+      this.render();
+    }
+  }
+
+  private cancelQuickPlay(): void {
+    const c = wsClient as any;
+    if (typeof c.leaveQueue === 'function') {
+      try { c.leaveQueue(); } catch { /* swallow */ }
+    }
+    this.stage = 'quick_play';
+    this.errorText = null;
+    this.render();
+  }
+
+  private startCreate(mode: GameMode, bet: number): void {
+    if (!this.isConnected()) return;
+    if (bet > 0 && this.stats && this.stats.pips < bet) {
+      this.errorText = t('multiplayer.notEnoughPips') ||
+        l('Not enough pips for this bet', 'Недостаточно очков для этой ставки');
+      this.render();
+      return;
+    }
     this.stage = 'busy';
     this.errorText = null;
     this.render();
@@ -351,7 +645,7 @@ export class MultiplayerLobbyUI {
     try {
       const c = wsClient as any;
       if (typeof c.createLobby === 'function') {
-        c.createLobby(mode);
+        c.createLobby(mode, bet);
       } else {
         this.errorText = 'Multiplayer not available on this build';
         this.stage = 'home';
@@ -367,7 +661,10 @@ export class MultiplayerLobbyUI {
   private startJoin(rawCode: string): void {
     const code = rawCode.trim().toUpperCase();
     if (!/^[A-Z0-9]{8}$/.test(code)) {
-      this.errorText = 'Code must be 8 characters (A–Z, 0–9)';
+      this.errorText = l(
+        'Code must be 8 characters (A–Z, 0–9)',
+        'Код должен состоять из 8 символов (A–Z, 0–9)',
+      );
       this.render();
       return;
     }
@@ -432,7 +729,10 @@ export class MultiplayerLobbyUI {
     }
     const c = wsClient as any;
     if (!c.isConnected) {
-      this.errorText = 'Not connected to server. Try again in a moment.';
+      this.errorText = l(
+        'Not connected to server. Try again in a moment.',
+        'Нет связи с сервером. Попробуйте ещё раз.',
+      );
       this.render();
       return;
     }
@@ -478,7 +778,10 @@ export class MultiplayerLobbyUI {
     const c = wsClient as any;
     const ok = !!c.isConnected;
     if (!ok) {
-      this.errorText = 'Not connected to server. Try again in a moment.';
+      this.errorText = l(
+        'Not connected to server. Try again in a moment.',
+        'Нет связи с сервером. Попробуйте ещё раз.',
+      );
     }
     return ok;
   }
@@ -488,11 +791,14 @@ export class MultiplayerLobbyUI {
   private render(): void {
     if (!this.mounted) return;
     switch (this.stage) {
-      case 'home':     this.renderHome();    break;
-      case 'create':   this.renderCreate();  break;
-      case 'join':     this.renderJoin();    break;
-      case 'in_lobby': this.renderInLobby(); break;
-      case 'busy':     this.renderBusy();    break;
+      case 'home':       this.renderHome();       break;
+      case 'quick_play': this.renderQuickPlay();  break;
+      case 'searching':  this.renderSearching();  break;
+      case 'create':     this.renderCreate();     break;
+      case 'create_bet': this.renderCreateBet();  break;
+      case 'join':       this.renderJoin();       break;
+      case 'in_lobby':   this.renderInLobby();    break;
+      case 'busy':       this.renderBusy();       break;
     }
   }
 
@@ -540,23 +846,83 @@ export class MultiplayerLobbyUI {
     `;
   }
 
+  private profileHtml(): string {
+    const s = this.stats;
+    if (!s) return '';
+    const xpFloor = xpForLevel(s.level);
+    const xpCeil = xpForLevel(s.level + 1);
+    const span = Math.max(1, xpCeil - xpFloor);
+    const into = Math.max(0, Math.min(span, s.xp - xpFloor));
+    const pct = Math.round((into / span) * 100);
+    const levelStr = `${escapeHtml(t('profile.level') || l('Level', 'Уровень'))} ${s.level}`;
+    const winsLabel = t('profile.wins') || l('Wins', 'Побед');
+    const lossesLabel = t('profile.losses') || l('Losses', 'Поражений');
+    const gamesLabel = t('profile.gamesPlayed') || l('Games played', 'Игр сыграно');
+    return `
+      <div class="ymp-profile">
+        <div class="row1">
+          <span class="level-pill">${levelStr}</span>
+          <span class="pips">${s.pips}</span>
+        </div>
+        <div class="xpbar"><span style="width:${pct}%"></span></div>
+        <div class="xp-text">
+          <span>${escapeHtml(t('profile.xp') || 'XP')}</span>
+          <span>${s.xp - xpFloor} / ${span}</span>
+        </div>
+        <div class="stats">
+          <span>${escapeHtml(gamesLabel)}: <b>${s.gamesPlayed}</b></span>
+          <span>${escapeHtml(winsLabel)}: <b>${s.wins}</b></span>
+          <span>${escapeHtml(lossesLabel)}: <b>${s.losses}</b></span>
+        </div>
+      </div>
+    `;
+  }
+
+  // Renders the bet chip row. `selected` is the currently chosen
+  // amount; the active chip is highlighted. Chips above the player's
+  // pip balance are disabled.
+  private betChipsHtml(selected: number): string {
+    const balance = this.stats?.pips ?? 0;
+    return ALLOWED_BETS.map((amount) => {
+      const fmt = formatBet(amount);
+      const tooExpensive = amount > 0 && amount > balance;
+      const isActive = amount === selected;
+      const classes = ['ymp-chip'];
+      if (isActive) classes.push('active');
+      const amountClass = fmt.isFree ? 'amount zero' : 'amount';
+      return `
+        <button class="${classes.join(' ')}"
+                data-act="pick-bet" data-bet="${amount}"
+                ${tooExpensive ? 'disabled' : ''}
+                aria-pressed="${isActive ? 'true' : 'false'}">
+          <span class="${amountClass}">${escapeHtml(fmt.amount)}</span>
+          <span class="label">${escapeHtml(fmt.label)}</span>
+        </button>
+      `;
+    }).join('');
+  }
+
   private renderHome(): void {
     this.panel.innerHTML = `
       ${this.headerHtml(t('multiplayer.title') || 'Multiplayer', false)}
       ${this.statusHtml()}
+      ${this.profileHtml()}
       ${this.nicknameSectionHtml()}
       <div class="ymp-row col">
-        <button class="ymp-btn primary" data-act="go-create">
+        <button class="ymp-btn primary" data-act="go-quick">
+          ${escapeHtml(t('multiplayer.quickPlay') || 'Quick play')}
+        </button>
+        <button class="ymp-btn ghost" data-act="go-create">
           ${escapeHtml(t('multiplayer.createLobby') || 'Create lobby')}
         </button>
         <button class="ymp-btn ghost" data-act="go-join">
           ${escapeHtml(t('multiplayer.joinByCode') || 'Join by code')}
         </button>
       </div>
-      <div class="ymp-status" style="font-size:12px">
+      <div class="ymp-help">
         ${escapeHtml(
           t('multiplayer.help') ||
-          "Invite friends by sharing the 8-character lobby code. Winner gets pips — no real-money bets.",
+          'Invite friends by sharing the 8-character lobby code, or use Quick play to match with random opponents.',
         )}
       </div>
     `;
@@ -570,6 +936,98 @@ export class MultiplayerLobbyUI {
     });
   }
 
+  private renderQuickPlay(): void {
+    const balance = this.stats?.pips ?? 0;
+    const modes: { id: QueueMode; name: string; sub: string }[] = [
+      {
+        id: 'duel',
+        name: t('multiplayer.modeDuel') || '1×1',
+        sub: t('multiplayer.modeDuelSub') || 'Duel · two players',
+      },
+      {
+        id: 'any',
+        name: t('multiplayer.modeAny') || 'Any',
+        sub: t('multiplayer.modeAnySub') || 'Group · 3 to 5 players',
+      },
+    ];
+    const modeCards = modes
+      .map(
+        (m) => `
+          <div class="ymp-mode-card ${this.selectedQueueMode === m.id ? 'active' : ''}"
+               data-act="pick-mode" data-mode="${m.id}"
+               role="button" tabindex="0" aria-pressed="${this.selectedQueueMode === m.id}">
+            <div>
+              <div class="name">${escapeHtml(m.name)}</div>
+              <div class="sub">${escapeHtml(m.sub)}</div>
+            </div>
+          </div>
+        `,
+      )
+      .join('');
+    const canPlay =
+      this.selectedBet === 0 || this.selectedBet <= balance;
+    const balanceLabel = (t('multiplayer.currentBalance') || 'Your pips: {pips}').replace(
+      '{pips}',
+      String(balance),
+    );
+    this.panel.innerHTML = `
+      ${this.headerHtml(t('multiplayer.quickPlay') || 'Quick play', true)}
+      ${this.statusHtml()}
+      <div class="ymp-section">
+        <div class="ymp-section-title">${escapeHtml(t('multiplayer.selectMode') || 'Pick a mode')}</div>
+        <div class="ymp-row col">${modeCards}</div>
+      </div>
+      <div class="ymp-section">
+        <div class="ymp-section-title">${escapeHtml(t('multiplayer.selectBet') || 'Pick a bet')}</div>
+        <div class="ymp-bet-row">${this.betChipsHtml(this.selectedBet)}</div>
+        <div class="ymp-help">
+          ${this.selectedBet === 0
+            ? escapeHtml(t('multiplayer.noBetSub') || 'Free play · winner gets fixed pips')
+            : `<b>${escapeHtml(t('multiplayer.winnerTakesBank') || 'Winner takes the pot')}</b>`}
+          · ${escapeHtml(balanceLabel)}
+        </div>
+      </div>
+      <div class="ymp-row col">
+        <button class="ymp-btn primary" data-act="find-match" ${canPlay ? '' : 'disabled'}>
+          ${escapeHtml(t('multiplayer.findMatch') || 'Find match')}
+        </button>
+      </div>
+    `;
+    this.bindActionButtons();
+  }
+
+  private renderSearching(): void {
+    const fmt = formatBet(this.selectedBet);
+    const modeLabel =
+      this.selectedQueueMode === 'duel'
+        ? t('multiplayer.modeDuel') || '1×1'
+        : t('multiplayer.modeAny') || 'Any';
+    const searchingText =
+      this.selectedQueueMode === 'any'
+        ? (t('multiplayer.searchingAny') || 'Searching for {min}–{max} players…')
+            .replace('{min}', '3')
+            .replace('{max}', '5')
+        : t('multiplayer.searching') || 'Searching for an opponent…';
+    const betLine = this.selectedBet === 0
+      ? escapeHtml(t('multiplayer.noBet') || 'No bet')
+      : `${escapeHtml(t('multiplayer.betAmount') || 'Bet')}: <b>${escapeHtml(fmt.amount)}</b>`;
+    this.panel.innerHTML = `
+      ${this.headerHtml(t('multiplayer.quickPlay') || 'Quick play', false)}
+      ${this.statusHtml()}
+      <div class="ymp-spinner"></div>
+      <div class="ymp-status ok">${escapeHtml(searchingText)}</div>
+      <div class="ymp-help" style="text-align:center">
+        ${escapeHtml(modeLabel)} · ${betLine}
+      </div>
+      <div class="ymp-row col">
+        <button class="ymp-btn danger" data-act="cancel-search">
+          ${escapeHtml(t('multiplayer.cancelSearch') || 'Cancel search')}
+        </button>
+      </div>
+    `;
+    this.bindActionButtons();
+  }
+
   private renderCreate(): void {
     // Palmo's Dice first — it's the flagship mode the user asked for in
     // the Yandex Games build (and the one with a clear winner concept
@@ -578,7 +1036,8 @@ export class MultiplayerLobbyUI {
     const cards = modes
       .map(
         (m) => `
-          <div class="ymp-mode-card" data-mode="${m}" role="button" tabindex="0">
+          <div class="ymp-mode-card" data-act="pick-create-mode" data-mode="${m}"
+               role="button" tabindex="0">
             <div>
               <div class="name">${escapeHtml(MODE_LABELS[m].name)}</div>
               <div class="sub">${escapeHtml(MODE_LABELS[m].sub)}</div>
@@ -593,12 +1052,44 @@ export class MultiplayerLobbyUI {
       <div class="ymp-row col">${cards}</div>
     `;
     this.bindActionButtons();
-    this.panel.querySelectorAll<HTMLElement>('.ymp-mode-card').forEach((el) => {
-      el.addEventListener('click', () => {
-        const m = el.dataset.mode as GameMode | undefined;
-        if (m) this.startCreate(m);
-      });
-    });
+  }
+
+  private renderCreateBet(): void {
+    const mode = this.pendingCreateMode;
+    if (!mode) {
+      this.stage = 'create';
+      this.render();
+      return;
+    }
+    const balance = this.stats?.pips ?? 0;
+    const canPlay = this.selectedBet === 0 || this.selectedBet <= balance;
+    const balanceLabel = (t('multiplayer.currentBalance') || 'Your pips: {pips}').replace(
+      '{pips}',
+      String(balance),
+    );
+    this.panel.innerHTML = `
+      ${this.headerHtml(MODE_LABELS[mode].name, true)}
+      ${this.statusHtml()}
+      <div class="ymp-help" style="text-align:center; opacity:0.85">
+        ${escapeHtml(MODE_LABELS[mode].sub)}
+      </div>
+      <div class="ymp-section">
+        <div class="ymp-section-title">${escapeHtml(t('multiplayer.selectBet') || 'Pick a bet')}</div>
+        <div class="ymp-bet-row">${this.betChipsHtml(this.selectedBet)}</div>
+        <div class="ymp-help">
+          ${this.selectedBet === 0
+            ? escapeHtml(t('multiplayer.noBetSub') || 'Free play · winner gets fixed pips')
+            : `<b>${escapeHtml(t('multiplayer.winnerTakesBank') || 'Winner takes the pot')}</b>`}
+          · ${escapeHtml(balanceLabel)}
+        </div>
+      </div>
+      <div class="ymp-row col">
+        <button class="ymp-btn primary" data-act="confirm-create" ${canPlay ? '' : 'disabled'}>
+          ${escapeHtml(t('multiplayer.createLobby') || 'Create lobby')}
+        </button>
+      </div>
+    `;
+    this.bindActionButtons();
   }
 
   private renderJoin(): void {
@@ -629,6 +1120,7 @@ export class MultiplayerLobbyUI {
   private renderBusy(): void {
     this.panel.innerHTML = `
       ${this.headerHtml(t('multiplayer.title') || 'Multiplayer', false)}
+      <div class="ymp-spinner"></div>
       <div class="ymp-status">
         ${escapeHtml(t('multiplayer.connecting') || 'Connecting…')}
       </div>
@@ -706,16 +1198,27 @@ export class MultiplayerLobbyUI {
   private bindActionButtons(): void {
     this.panel.querySelectorAll<HTMLElement>('[data-act]').forEach((el) => {
       const act = el.dataset.act!;
-      el.addEventListener('click', () => this.dispatchAction(act));
+      el.addEventListener('click', () => this.dispatchAction(act, el));
     });
   }
 
-  private dispatchAction(act: string): void {
+  private dispatchAction(act: string, el?: HTMLElement): void {
     switch (act) {
       case 'close':       this.close(); break;
       case 'back':
         this.errorText = null;
-        this.stage = this.currentLobby ? 'in_lobby' : 'home';
+        if (this.stage === 'create_bet') {
+          this.stage = 'create';
+        } else if (this.stage === 'quick_play' || this.stage === 'create' || this.stage === 'join') {
+          this.stage = 'home';
+        } else {
+          this.stage = this.currentLobby ? 'in_lobby' : 'home';
+        }
+        this.render();
+        break;
+      case 'go-quick':
+        this.errorText = null;
+        this.stage = 'quick_play';
         this.render();
         break;
       case 'go-create':
@@ -727,6 +1230,46 @@ export class MultiplayerLobbyUI {
         this.errorText = null;
         this.stage = 'join';
         this.render();
+        break;
+      case 'pick-mode': {
+        const m = el?.dataset.mode as QueueMode | undefined;
+        if (m === 'duel' || m === 'any') {
+          this.selectedQueueMode = m;
+          this.errorText = null;
+          this.render();
+        }
+        break;
+      }
+      case 'pick-bet': {
+        const raw = el?.dataset.bet;
+        const amount = raw != null ? Number(raw) : NaN;
+        if (Number.isFinite(amount) && ALLOWED_BETS.includes(amount)) {
+          this.selectedBet = amount;
+          this.errorText = null;
+          this.render();
+        }
+        break;
+      }
+      case 'find-match':
+        this.startQuickPlay(this.selectedQueueMode, this.selectedBet);
+        break;
+      case 'cancel-search':
+        this.cancelQuickPlay();
+        break;
+      case 'pick-create-mode': {
+        const m = el?.dataset.mode as GameMode | undefined;
+        if (m) {
+          this.pendingCreateMode = m;
+          this.errorText = null;
+          this.stage = 'create_bet';
+          this.render();
+        }
+        break;
+      }
+      case 'confirm-create':
+        if (this.pendingCreateMode) {
+          this.startCreate(this.pendingCreateMode, this.selectedBet);
+        }
         break;
       case 'submit-join': {
         const input = this.panel.querySelector<HTMLInputElement>('#ymp-code-in');

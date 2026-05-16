@@ -15,8 +15,31 @@ export interface User {
   equippedEffectId: number | null;
   referralCode?: string | null;
   pips?: number; // Points earned from dice rolls
+  // Player progression / matchmaking stats. Cross-platform fields stored
+  // on the users row; the Yandex Games build surfaces them in the
+  // multiplayer profile widget and uses `level` to band the quick-play
+  // matchmaking queue. Telegram build currently doesn't render these
+  // (they still accumulate silently).
+  xp?: number;
+  level?: number;
+  gamesPlayed?: number;
+  wins?: number;
+  losses?: number;
   lastOnline: Date;
   createdAt: Date;
+}
+
+// Snapshot of progression / score fields returned by `get_player_stats` and
+// `stats_updated` WS messages. Kept separate from `User` so we can ship just
+// the delta without re-sending the whole user payload.
+export interface PlayerStats {
+  userId: number;
+  xp: number;
+  level: number;
+  gamesPlayed: number;
+  wins: number;
+  losses: number;
+  pips: number;
 }
 
 export interface TelegramUser {

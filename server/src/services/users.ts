@@ -353,6 +353,11 @@ function mapUser(row: any): User {
     equippedEffectId: row.equipped_effect_id as number | null,
     referralCode: row.referral_code as string | null,
     pips: row.pips ? parseInt(row.pips as string, 10) : 0,
+    xp: row.xp == null ? 0 : parseInt(row.xp as string, 10),
+    level: row.level == null ? 1 : parseInt(row.level as string, 10),
+    gamesPlayed: row.games_played == null ? 0 : parseInt(row.games_played as string, 10),
+    wins: row.wins == null ? 0 : parseInt(row.wins as string, 10),
+    losses: row.losses == null ? 0 : parseInt(row.losses as string, 10),
     lastOnline: new Date(row.last_online as string),
     createdAt: new Date(row.created_at as string),
   };

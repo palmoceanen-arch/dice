@@ -45,6 +45,21 @@ const migrations = [
   // no_bet=true so the in-round BettingManager flow is bypassed and the
   // game-end payout is a fixed pip reward to the winner(s).
   `ALTER TABLE lobbies ADD COLUMN IF NOT EXISTS no_bet BOOLEAN NOT NULL DEFAULT FALSE`,
+
+  // Player progression / matchmaking stats. Used by the Yandex Games build
+  // to power the quick-play matchmaking queue (level-banded matching) and
+  // the profile widget on the multiplayer home screen. Columns are
+  // cross-platform so the Telegram path stays compatible — Telegram simply
+  // doesn't surface them in its UI today. All defaults are zero so no
+  // existing row is invalidated.
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS xp           INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS level        INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS games_played INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS wins         INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS losses       INTEGER NOT NULL DEFAULT 0`,
+  // Index by level so the in-memory matchmaking service can fetch a
+  // candidate band cheaply when it needs to backfill on cold start.
+  `CREATE INDEX IF NOT EXISTS idx_users_level ON users(level)`,
 ];
 
 async function migrate() {

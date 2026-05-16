@@ -8,6 +8,8 @@ import { activateBoost, getActiveBoosts, getBoostState } from '../services/boost
 import { BettingManager } from '../services/betting.js';
 import * as lobby from '../services/lobby.js';
 import * as game from '../services/game.js';
+import * as matchmaking from '../services/matchmaking.js';
+import { getPlayerStats } from '../services/stats.js';
 import * as connections from './connections.js';
 import { setUserIdForWs } from './server.js';
 import { config } from '../config.js';
@@ -94,15 +96,27 @@ export async function handleMessage(ws: WebSocket, message: any, userId: number 
         break;
         
       // Lobby
-      case 'create_lobby':
+      case 'create_lobby': {
+        // New protocol: `bet` is the per-player stake in pips. `0`
+        // (or omitted with `noBet: true`) means a no-bet lobby.
+        //
+        // Legacy protocol (Telegram callsites): `noBet: true`. When
+        // both are absent we default to a regular betting lobby.
+        const bet =
+          typeof message.bet === 'number'
+            ? message.bet
+            : message.noBet === true
+              ? 0
+              : undefined;
         await handleCreateLobby(
           userId,
           message.gameMode,
           message.screenWidth,
           message.screenHeight,
-          message.noBet === true,
+          bet,
         );
         break;
+      }
       case 'join_lobby':
         await handleJoinLobby(userId, message.lobbyId, message.screenWidth, message.screenHeight);
         break;
@@ -204,7 +218,23 @@ export async function handleMessage(ws: WebSocket, message: any, userId: number 
       case 'cancel_bet':
         await handleCancelBet(userId);
         break;
-      
+
+      // Matchmaking (Yandex quick-play)
+      case 'mm_join_queue':
+        await matchmaking.joinQueue({
+          userId,
+          mode: message.mode,
+          betAmount: message.betAmount,
+          gameMode: message.gameMode,
+        });
+        break;
+      case 'mm_leave_queue':
+        matchmaking.leaveQueue(userId);
+        break;
+      case 'get_player_stats':
+        await handleGetPlayerStats(userId);
+        break;
+
       default:
         connections.send(userId, { type: 'error', message: `Unknown message type: ${message.type}` });
     }
@@ -678,7 +708,7 @@ async function handleCreateLobby(
   gameMode: GameMode,
   screenWidth?: number,
   screenHeight?: number,
-  noBet: boolean = false,
+  bet?: number,
 ): Promise<void> {
   // Check if already in a lobby
   const conn = connections.getConnection(userId);
@@ -687,6 +717,10 @@ async function handleCreateLobby(
     return;
   }
 
+  // `bet === 0` (and the legacy `noBet: true` path) opt into the no-bet
+  // lobby flavour; any positive value or `undefined` keeps the regular
+  // betting flow.
+  const noBet = bet === 0;
   const newLobby = await lobby.createLobby(userId, gameMode, noBet);
   metricsCollector.lobbyCreated();
   
@@ -2157,6 +2191,11 @@ function broadcastTurnChange(lobbyId: string, playerId: number): void {
 }
 
 export function handleDisconnect(userId: number): void {
+  // Pop the player out of the matchmaking queue first — they're gone,
+  // no point trying to match them. Safe to call even if they weren't
+  // queued.
+  matchmaking.handleDisconnect(userId);
+
   const conn = connections.getConnection(userId);
   if (conn) {
     console.log(`User ${conn.user.nickname} (${userId}) disconnected`);
@@ -2582,4 +2621,14 @@ async function handleSendReaction(userId: number, content: string): Promise<void
   broadcastToLobby(conn.lobbyId, reactionMessage, userId);
   
   logger.info('Reaction sent', { userId, lobbyId: conn.lobbyId, content });
+}
+
+// === Player stats (Yandex profile widget / matchmaking level) ===
+async function handleGetPlayerStats(userId: number): Promise<void> {
+  const stats = await getPlayerStats(userId);
+  if (!stats) {
+    connections.send(userId, { type: 'player_stats', stats: null });
+    return;
+  }
+  connections.send(userId, { type: 'player_stats', stats });
 }
