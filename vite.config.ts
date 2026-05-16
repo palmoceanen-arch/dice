@@ -1,10 +1,34 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const IS_YANDEX = process.env.VITE_PLATFORM === 'yandex';
+
+// Yandex Games' upload pipeline expects the entry HTML to be named
+// `index.html` at the root of the uploaded archive — it rejects builds
+// that contain zero or multiple `index.html` files with the error
+// "Не найдено ни одного, либо найдено несколько файлов index.html".
+// We keep the source file as `index.yandex.html` so the Telegram and
+// Yandex entry pages can coexist in the repo, and rename the emitted
+// artifact at the end of the build.
+function renameYandexHtmlPlugin(): Plugin {
+  return {
+    name: 'rename-yandex-html',
+    apply: 'build',
+    enforce: 'post',
+    closeBundle() {
+      const outDir = path.resolve(__dirname, 'dist-yandex');
+      const src = path.join(outDir, 'index.yandex.html');
+      const dst = path.join(outDir, 'index.html');
+      if (fs.existsSync(src)) {
+        fs.renameSync(src, dst);
+      }
+    },
+  };
+}
 
 // When building for Yandex Games we alias the canonical `WebSocketClient`
 // singleton to the Yandex stub, which transparently subclasses the real
@@ -54,7 +78,10 @@ export default defineConfig({
   // bundle keeps absolute paths because it's served from the root of
   // its own static host.
   base: IS_YANDEX ? './' : '/',
-  plugins: process.env.USE_SSL ? [basicSsl()] : [],
+  plugins: [
+    ...(process.env.USE_SSL ? [basicSsl()] : []),
+    ...(IS_YANDEX ? [renameYandexHtmlPlugin()] : []),
+  ],
   resolve: IS_YANDEX ? { alias: yandexAliases } : undefined,
   server: {
     host: '0.0.0.0',
