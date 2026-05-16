@@ -6,7 +6,11 @@ import { logger } from '../utils/logger.js';
 
 // Generate unique nickname
 async function generateNickname(baseName: string): Promise<string> {
-  const clean = baseName.replace(/[^a-zA-Z0-9]/g, '').substring(0, 20);
+  // Keep letters (incl. Cyrillic and other Unicode scripts) and digits.
+  // The previous /[^a-zA-Z0-9]/g pattern stripped every Cyrillic character, so
+  // Yandex players named e.g. "Павел Слонов" ended up with the generic
+  // fallback "Player". `\p{L}` keeps any Unicode letter, `\p{N}` any digit.
+  const clean = baseName.replace(/[^\p{L}\p{N}]/gu, '').substring(0, 20);
   const base = clean || 'Player';
   
   // Try base name first
