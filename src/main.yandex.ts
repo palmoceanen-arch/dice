@@ -79,6 +79,45 @@ const WS_URL: string = (import.meta as any).env?.VITE_WS_URL ?? '';
     (wsClient as any).connect().catch((e: unknown) => {
       console.warn('[main.yandex] initial WS connect failed (will auto-retry)', e);
     });
+
+    // Once the server confirms auth, hand the player's equipped-dice config
+    // to the real `DiceSync` so it can restore the original dice colour and
+    // texture after a multiplayer replay (DiceSync.resetForSoloMode reads
+    // from this). The Telegram build does the same in src/main.ts; without
+    // it, dice silently keep the opponent's appearance after a match. The
+    // Yandex stub `WebSocketClient` already overrides `getEquippedDiceConfig`
+    // to read from Cloud Save, so this works in offline mode too.
+    (wsClient as any).on?.('auth_success', () => {
+      try {
+        const diceConfig = (wsClient as any).getEquippedDiceConfig?.();
+        if (diceConfig) {
+          const diceSync = (game as any).getDiceSync?.();
+          if (diceSync && typeof diceSync.setOriginalDiceConfig === 'function') {
+            diceSync.setOriginalDiceConfig(diceConfig);
+          }
+        }
+      } catch (e) {
+        console.warn('[main.yandex] auth_success dice-config handler failed', e);
+      }
+    });
+
+    // Mirror Telegram main.ts: when the player swaps a dice from inventory we
+    // refresh DiceSync's "original" config so post-replay restoration uses
+    // the new design.
+    (wsClient as any).on?.('item_equipped', (data: any) => {
+      if (data?.slot !== 'dice') return;
+      try {
+        const diceConfig = (wsClient as any).getEquippedDiceConfig?.();
+        if (diceConfig) {
+          const diceSync = (game as any).getDiceSync?.();
+          if (diceSync && typeof diceSync.setOriginalDiceConfig === 'function') {
+            diceSync.setOriginalDiceConfig(diceConfig);
+          }
+        }
+      } catch (e) {
+        console.warn('[main.yandex] item_equipped dice-config handler failed', e);
+      }
+    });
   }
 
   // Apply persisted settings.

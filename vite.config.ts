@@ -6,23 +6,36 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const IS_YANDEX = process.env.VITE_PLATFORM === 'yandex';
 
-// When building for Yandex Games we alias the three multiplayer modules
-// used inside game/Game.ts to local stubs in src/yandex/stubs/. The result
-// is that the Yandex bundle contains no networking code, no Telegram
-// dependencies, and the multiplayer paths inside Game.ts become dead
-// branches that tree-shake away.
+// When building for Yandex Games we alias the canonical `WebSocketClient`
+// singleton to the Yandex stub, which transparently subclasses the real
+// client and ships a Yandex-flavoured auth payload (see
+// src/yandex/stubs/WebSocketClient.ts). The Telegram-style `multiplayer/UI`
+// modules (lobby browser, BoostsModal, BettingModal, ReactionWheel,
+// ConnectionIndicator) are not imported by main.yandex.ts, so they are
+// already tree-shaken out of the Yandex bundle.
+//
+// We deliberately use the *real* `GameSync` and `DiceSync` here — they
+// are the modules that drive the in-game multiplayer state (turn order,
+// opponent throws, dice replay, game-over UI), and the Yandex build is
+// expected to support live multiplayer end-to-end. The matching `./...`
+// alias below makes sure that when `GameSync` / `DiceSync` import their
+// sibling `./WebSocketClient`, they pick up the same Yandex singleton
+// `wsClient` instance everyone else is using — otherwise they'd silently
+// instantiate a second, never-connected client and miss every event.
 const yandexAliases = [
   {
     find: /^\.\.\/multiplayer\/WebSocketClient(\.ts)?$/,
     replacement: path.resolve(__dirname, 'src/yandex/stubs/WebSocketClient.ts'),
   },
   {
-    find: /^\.\.\/multiplayer\/GameSync(\.ts)?$/,
-    replacement: path.resolve(__dirname, 'src/yandex/stubs/GameSync.ts'),
-  },
-  {
-    find: /^\.\.\/multiplayer\/DiceSync(\.ts)?$/,
-    replacement: path.resolve(__dirname, 'src/yandex/stubs/DiceSync.ts'),
+    // Used by `src/multiplayer/GameSync.ts` and `src/multiplayer/DiceSync.ts`
+    // when they do `import { wsClient } from './WebSocketClient'`. Without
+    // this they'd resolve to the canonical singleton and never receive any
+    // events. The Yandex stub itself uses `../../multiplayer/WebSocketClient`
+    // (two `..` segments) to fetch the class for subclassing, which doesn't
+    // match this regex, so there's no recursion.
+    find: /^\.\/WebSocketClient(\.ts)?$/,
+    replacement: path.resolve(__dirname, 'src/yandex/stubs/WebSocketClient.ts'),
   },
   {
     find: /^\.\/haptic(\.ts)?$/,
