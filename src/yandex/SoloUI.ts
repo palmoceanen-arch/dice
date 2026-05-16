@@ -72,31 +72,54 @@ function ensureStyles(): void {
       border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.6);
       display: flex; flex-direction: column; gap: 16px;
     }
-    .yui-settings-panel h2 { font-size: 18px; }
+    .yui-settings-panel h2 {
+      font-size: 18px; margin: 0;
+      text-align: center;
+    }
+    /* Settings rows are stacked: label on top, control below.
+       Avoids the previous horizontal squeeze where long RU labels
+       ("Качество графики", "Подтверждение броска") would push the
+       segmented buttons off the row and wrap unpredictably.
+
+       The "actions" variant (Close button) stays a single flex column
+       and is right-aligned. */
     .yui-row {
-      display: flex; align-items: center; justify-content: space-between;
-      gap: 12px;
+      display: flex; flex-direction: column;
+      align-items: stretch; gap: 6px;
     }
-    .yui-row label { font-size: 14px; opacity: 0.8; }
-    .yui-row select, .yui-row input[type=range] {
-      flex: 1; max-width: 200px;
+    .yui-row.actions {
+      align-items: stretch;
+      margin-top: 4px;
     }
-    .yui-row select {
-      padding: 6px 10px; border-radius: 8px;
-      background: rgba(255,255,255,0.08); color: #fff; border: 0;
-      font-family: inherit;
+    .yui-row > label {
+      font-size: 13px; font-weight: 600;
+      opacity: 0.7; letter-spacing: 0.02em;
     }
+    /* Segmented control: each button claims equal width so the active
+       indicator never jumps when labels of different lengths are
+       selected. */
     .yui-segmented {
-      display: inline-flex; gap: 4px; flex-wrap: wrap;
+      display: flex; gap: 4px;
+      background: rgba(255,255,255,0.04);
+      border-radius: 10px; padding: 4px;
     }
     .yui-segmented button {
-      padding: 6px 12px; border-radius: 8px; border: 0;
-      background: rgba(255,255,255,0.08); color: #fff;
+      flex: 1 1 0; min-width: 0;
+      padding: 8px 6px; border-radius: 7px; border: 0;
+      background: transparent; color: #fff;
       font-family: inherit; font-size: 13px; font-weight: 600;
-      cursor: pointer;
+      cursor: pointer; text-align: center;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      transition: background 0.15s, color 0.15s;
+    }
+    .yui-segmented button:hover {
+      background: rgba(255,255,255,0.06);
     }
     .yui-segmented button.active {
       background: #ffd84d; color: #1a1a1a;
+    }
+    .yui-row input[type=range] {
+      width: 100%; accent-color: #ffd84d;
     }
     .yui-btn {
       padding: 10px 14px; border-radius: 8px; border: 0;
