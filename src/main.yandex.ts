@@ -20,6 +20,7 @@ import { SoloUI } from './yandex/SoloUI';
 import { loadYandexAuth } from './yandex/yandexAuth';
 import { BoostsModal } from './ui/BoostsModal';
 import { ReactionWheel } from './ui/ReactionWheel';
+import { MultiplayerReconnectDialog } from './yandex/MultiplayerReconnectDialog';
 // Bring the multiplayer stub onto window — Game.ts and a few other modules
 // look up `(window as any).wsClient` directly, so the stub must be reachable
 // the same way the real client is in the Telegram build.
@@ -61,6 +62,16 @@ BoostsModal.init();
 // ignores unknown `send_reaction` payloads).
 const reactionWheel = new ReactionWheel();
 (window as any).reactionWheel = reactionWheel;
+
+// Reconnect-to-active-game dialog. The Telegram build owns this flow
+// inside `MultiplayerUI` which mounts at startup; on Yandex the lobby UI
+// is lazy, so we mount a dedicated module that subscribes to `auth_success`
+// + `canReconnect` from the moment the page loads. Only meaningful when
+// VITE_WS_URL is configured (live multiplayer mode) — the offline stub
+// never emits `canReconnect`, so the dialog stays dormant.
+const multiplayerReconnect = new MultiplayerReconnectDialog();
+multiplayerReconnect.mount();
+(window as any).multiplayerReconnect = multiplayerReconnect;
 
 // Sync the boost icon's visibility with the current game mode (the Yandex
 // GameSync stub always reports "not in multiplayer", so on the idle screen

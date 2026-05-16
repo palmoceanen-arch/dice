@@ -251,6 +251,10 @@ export class SoloUI {
     if (!this.multiplayer) {
       this.multiplayer = new MultiplayerLobbyUI();
       this.multiplayer.mount();
+      // Expose for MultiplayerReconnectDialog to dismiss it after a
+      // successful reconnect (so the lobby modal doesn't hang over the
+      // in-game HUD).
+      (window as any).multiplayerLobbyUI = this.multiplayer;
     }
     this.multiplayer.open();
   }
