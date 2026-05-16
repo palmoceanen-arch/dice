@@ -15,9 +15,14 @@ const SafeString = z.string().transform(s =>
   s.replace(/[<>'"&]/g, '').trim()
 );
 
+// Allow any Unicode letter (including Cyrillic, CJK, etc.) and digit, plus
+// underscore. Matches the sanitizer in users.ts → generateNickname() which
+// strips everything outside `\p{L}\p{N}` before assigning a default name; if
+// we only accepted ASCII here a user whose default is e.g. "ПавелСлонов"
+// could not edit their own nickname.
 const NicknameSchema = SafeString
   .refine(s => s.length >= 3 && s.length <= 32, 'Nickname must be 3-32 characters')
-  .refine(s => /^[a-zA-Z0-9_]+$/.test(s), 'Nickname can only contain letters, numbers, and underscores');
+  .refine(s => /^[\p{L}\p{N}_]+$/u.test(s), 'Nickname can only contain letters, numbers, and underscores');
 
 const UsernameSearchSchema = SafeString
   .refine(s => s.length >= 1 && s.length <= 64, 'Username must be 1-64 characters');

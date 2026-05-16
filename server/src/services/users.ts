@@ -236,14 +236,15 @@ export async function getUserByUsername(username: string): Promise<User | null> 
 }
 
 export async function setNickname(userId: number, nickname: string): Promise<boolean> {
-  // Validate nickname
+  // Validate nickname. Unicode letters/digits + underscore so Cyrillic / CJK /
+  // accented names round-trip through the editor (matches generateNickname()).
   if (nickname.length < 3 || nickname.length > 32) {
     return false;
   }
-  if (!/^[a-zA-Z0-9_]+$/.test(nickname)) {
+  if (!/^[\p{L}\p{N}_]+$/u.test(nickname)) {
     return false;
   }
-  
+
   try {
     await query('UPDATE users SET nickname = $2 WHERE id = $1', [userId, nickname]);
     return true;

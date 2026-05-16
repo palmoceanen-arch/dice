@@ -22,7 +22,25 @@
 
 import { wsClient } from './stubs/WebSocketClient';
 import { haptic } from './platform';
-import { t } from '../../shared/i18n';
+import { t, getCurrentLanguage } from '../../shared/i18n';
+
+// Tiny localization fallback. The Yandex lobby reaches keys (e.g.
+// `multiplayer.title`) that are added in a separate i18n PR; until that PR
+// lands `t()` returns the raw key, so `t() || fallback` never fires. Pick a
+// language-specific literal directly so the editor copy is sane in either
+// build state. Mirrors the Russian/English split the rest of the catalog
+// uses.
+function l(en: string, ru: string): string {
+  return getCurrentLanguage() === 'ru' ? ru : en;
+}
+
+// Mirrors server validators (services/users.ts setNickname,
+// utils/validator.ts NicknameSchema): 3-32 chars, Unicode letters / digits /
+// underscore only. Client-side check is purely UX — the server is the
+// source of truth.
+const NICKNAME_RE = /^[\p{L}\p{N}_]+$/u;
+const NICKNAME_MIN = 3;
+const NICKNAME_MAX = 32;
 
 type GameMode = 'street_craps' | 'mexico' | 'greedy_pig' | 'poker_dice';
 
@@ -44,6 +62,8 @@ interface LobbyShape {
 }
 
 type Stage = 'home' | 'create' | 'join' | 'in_lobby' | 'busy';
+
+type InfoKind = 'err' | 'ok';
 
 const STYLE_ID = 'yandex-mp-lobby-style';
 
@@ -140,6 +160,23 @@ function ensureStyles(): void {
       text-align: center;
     }
     .ymp-status.err { color: #ff8a8a; opacity: 1; background: rgba(255,80,80,0.10); }
+    .ymp-status.ok  { color: #7be58a; opacity: 1; background: rgba(70,200,90,0.12); }
+
+    .ymp-section {
+      display: flex; flex-direction: column; gap: 6px;
+      padding: 10px 12px; border-radius: 10px;
+      background: rgba(255,255,255,0.04);
+    }
+    .ymp-section-title {
+      font-size: 11px; opacity: 0.55; text-transform: uppercase;
+      letter-spacing: 0.6px;
+    }
+    .ymp-input {
+      flex: 1; padding: 10px 12px; border-radius: 8px; border: 0;
+      background: rgba(255,255,255,0.10); color: #fff;
+      font-family: inherit; font-size: 14px; min-width: 0;
+    }
+    .ymp-input::placeholder { color: rgba(255,255,255,0.4); }
   `;
   document.head.appendChild(style);
 }
@@ -187,6 +224,8 @@ export class MultiplayerLobbyUI {
   private stage: Stage = 'home';
   private currentLobby: LobbyShape | null = null;
   private errorText: string | null = null;
+  private infoText: string | null = null;
+  private infoKind: InfoKind = 'err';
   private mounted = false;
 
   // Bound handler refs so we can `off()` them on close (we re-attach on open).
@@ -197,6 +236,7 @@ export class MultiplayerLobbyUI {
   private readonly onLobbyError   = (m: any) => this.handleLobbyError(m);
   private readonly onError        = (m: any) => this.handleLobbyError(m);
   private readonly onGameStarted  = ()       => this.handleGameStarted();
+  private readonly onNicknameChanged = (m: any) => this.handleNicknameChanged(m);
 
   mount(): void {
     if (this.mounted) return;
@@ -220,6 +260,7 @@ export class MultiplayerLobbyUI {
     this.attachWsHandlers();
     this.stage = this.currentLobby ? 'in_lobby' : 'home';
     this.errorText = null;
+    this.infoText = null;
     this.overlay.classList.add('open');
     this.render();
   }
@@ -232,25 +273,27 @@ export class MultiplayerLobbyUI {
   private attachWsHandlers(): void {
     const c = wsClient as any;
     if (typeof c.on !== 'function') return;
-    c.on('lobby_created', this.onLobbyCreated);
-    c.on('lobby_joined',  this.onLobbyJoined);
-    c.on('lobby_state',   this.onLobbyState);
-    c.on('lobby_left',    this.onLobbyLeft);
-    c.on('lobby_error',   this.onLobbyError);
-    c.on('error',         this.onError);
-    c.on('game_started',  this.onGameStarted);
+    c.on('lobby_created',     this.onLobbyCreated);
+    c.on('lobby_joined',      this.onLobbyJoined);
+    c.on('lobby_state',       this.onLobbyState);
+    c.on('lobby_left',        this.onLobbyLeft);
+    c.on('lobby_error',       this.onLobbyError);
+    c.on('error',             this.onError);
+    c.on('game_started',      this.onGameStarted);
+    c.on('nickname_changed',  this.onNicknameChanged);
   }
 
   private detachWsHandlers(): void {
     const c = wsClient as any;
     if (typeof c.off !== 'function') return;
-    c.off('lobby_created', this.onLobbyCreated);
-    c.off('lobby_joined',  this.onLobbyJoined);
-    c.off('lobby_state',   this.onLobbyState);
-    c.off('lobby_left',    this.onLobbyLeft);
-    c.off('lobby_error',   this.onLobbyError);
-    c.off('error',         this.onError);
-    c.off('game_started',  this.onGameStarted);
+    c.off('lobby_created',     this.onLobbyCreated);
+    c.off('lobby_joined',      this.onLobbyJoined);
+    c.off('lobby_state',       this.onLobbyState);
+    c.off('lobby_left',        this.onLobbyLeft);
+    c.off('lobby_error',       this.onLobbyError);
+    c.off('error',             this.onError);
+    c.off('game_started',      this.onGameStarted);
+    c.off('nickname_changed',  this.onNicknameChanged);
   }
 
   private handleLobbyEvent(message: any, _kind: 'created' | 'joined' | 'state'): void {
@@ -271,7 +314,22 @@ export class MultiplayerLobbyUI {
   private handleLobbyError(message: any): void {
     const text = (message && (message.message || message.reason)) || 'Unknown error';
     this.errorText = String(text);
+    this.infoText = null;
     if (this.stage === 'busy') this.stage = this.currentLobby ? 'in_lobby' : 'home';
+    this.render();
+  }
+
+  private handleNicknameChanged(message: any): void {
+    // Server confirmed the rename. Mirror the change on the local user
+    // snapshot so subsequent renders (lobby player list, etc.) pick up the
+    // new value without waiting for a reconnect.
+    const c = wsClient as any;
+    if (c.user && typeof message?.nickname === 'string') {
+      c.user.nickname = message.nickname;
+    }
+    this.errorText = null;
+    this.infoText = l('Nickname saved', 'Никнейм сохранён');
+    this.infoKind = 'ok';
     this.render();
   }
 
@@ -352,6 +410,48 @@ export class MultiplayerLobbyUI {
     }
   }
 
+  private submitNickname(rawValue: string): void {
+    const value = rawValue.trim();
+    if (value.length < NICKNAME_MIN || value.length > NICKNAME_MAX) {
+      this.errorText = l(
+        `Nickname must be ${NICKNAME_MIN}-${NICKNAME_MAX} characters`,
+        `Ник должен быть ${NICKNAME_MIN}-${NICKNAME_MAX} символов`,
+      );
+      this.infoText = null;
+      this.render();
+      return;
+    }
+    if (!NICKNAME_RE.test(value)) {
+      this.errorText = l(
+        'Nickname can only contain letters, numbers, and underscores',
+        'Ник может содержать только буквы, цифры и подчёркивание',
+      );
+      this.infoText = null;
+      this.render();
+      return;
+    }
+    const c = wsClient as any;
+    if (!c.isConnected) {
+      this.errorText = 'Not connected to server. Try again in a moment.';
+      this.render();
+      return;
+    }
+    if (typeof c.setNickname !== 'function') {
+      this.errorText = 'Multiplayer not available on this build';
+      this.render();
+      return;
+    }
+    // Optimistic "saving…" hint; the real confirmation arrives via the
+    // server's `nickname_changed` (handled in handleNicknameChanged) or
+    // `error` (handled in handleLobbyError).
+    haptic.light();
+    this.errorText = null;
+    this.infoText = l('Saving…', 'Сохраняем…');
+    this.infoKind = 'ok';
+    c.setNickname(value);
+    this.render();
+  }
+
   private async copyCode(code: string): Promise<void> {
     try {
       await navigator.clipboard.writeText(code);
@@ -410,14 +510,41 @@ export class MultiplayerLobbyUI {
   }
 
   private statusHtml(): string {
-    if (!this.errorText) return '';
-    return `<div class="ymp-status err">${escapeHtml(this.errorText)}</div>`;
+    if (this.errorText) {
+      return `<div class="ymp-status err">${escapeHtml(this.errorText)}</div>`;
+    }
+    if (this.infoText) {
+      const kind = this.infoKind === 'ok' ? 'ok' : '';
+      return `<div class="ymp-status ${kind}">${escapeHtml(this.infoText)}</div>`;
+    }
+    return '';
+  }
+
+  private nicknameSectionHtml(): string {
+    const c = wsClient as any;
+    const current = (c.user?.nickname as string | undefined) ?? '';
+    return `
+      <div class="ymp-section">
+        <div class="ymp-section-title">${escapeHtml(l('Your nickname', 'Ваш ник'))}</div>
+        <div class="ymp-row">
+          <input class="ymp-input" id="ymp-nick-in"
+                 maxlength="${NICKNAME_MAX}"
+                 autocomplete="off" spellcheck="false"
+                 value="${escapeHtml(current)}"
+                 placeholder="${escapeHtml(l('Nickname', 'Никнейм'))}" />
+          <button class="ymp-btn primary" data-act="submit-nick" style="flex:0 0 auto">
+            ${escapeHtml(l('Save', 'Сохранить'))}
+          </button>
+        </div>
+      </div>
+    `;
   }
 
   private renderHome(): void {
     this.panel.innerHTML = `
       ${this.headerHtml(t('multiplayer.title') || 'Multiplayer', false)}
       ${this.statusHtml()}
+      ${this.nicknameSectionHtml()}
       <div class="ymp-row col">
         <button class="ymp-btn primary" data-act="go-create">
           ${escapeHtml(t('multiplayer.createLobby') || 'Create lobby')}
@@ -434,6 +561,13 @@ export class MultiplayerLobbyUI {
       </div>
     `;
     this.bindActionButtons();
+    const nickIn = this.panel.querySelector<HTMLInputElement>('#ymp-nick-in');
+    nickIn?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        this.submitNickname(nickIn.value);
+      }
+    });
   }
 
   private renderCreate(): void {
@@ -597,6 +731,11 @@ export class MultiplayerLobbyUI {
       case 'submit-join': {
         const input = this.panel.querySelector<HTMLInputElement>('#ymp-code-in');
         this.startJoin(input?.value ?? '');
+        break;
+      }
+      case 'submit-nick': {
+        const input = this.panel.querySelector<HTMLInputElement>('#ymp-nick-in');
+        this.submitNickname(input?.value ?? '');
         break;
       }
       case 'copy-code':
