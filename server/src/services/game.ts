@@ -381,35 +381,19 @@ export function getPalmosRerollSelection(lobbyId: string, userId: number): numbe
 export function processPalmosTake(lobbyId: string, userId: number): RollResult | null {
   const state = activeGames.get(lobbyId);
   if (!state || state.gameMode !== 'poker_dice') {
-    console.log('[Palmos] processPalmosTake: invalid state or game mode');
     return null;
   }
-  
+
   const palmosState = state.modeState as any;
-  
-  console.log('[Palmos] processPalmosTake:', {
-    userId,
-    hasCurrentRound: !!palmosState.currentRound,
-    currentRoundPlayerId: palmosState.currentRound?.playerId,
-    currentDice: palmosState.currentRound?.currentDice
-  });
-  
-  // Check if player has a current round
+
   if (!palmosState.currentRound || palmosState.currentRound.playerId !== userId) {
-    console.log('[Palmos] No current round or wrong player');
     return null;
   }
-  
-  // Evaluate current hand and award points
+
   const hand = evaluateHandFromState(palmosState.currentRound.currentDice);
-  
-  console.log('[Palmos] Hand evaluated:', hand);
-  
   const currentScore = palmosState.scores.get(userId) || 0;
   const newScore = currentScore + hand.points;
   palmosState.scores.set(userId, newScore);
-  
-  console.log('[Palmos] Score updated:', { currentScore, newScore });
   
   // Clear current round
   palmosState.currentRound = null;

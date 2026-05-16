@@ -441,6 +441,17 @@ function handleSetPlayerItems(
   connections.setClientItemOverride(userId, 'dice', items.dice);
   connections.setClientItemOverride(userId, 'table', items.table);
   connections.setClientItemOverride(userId, 'effect', items.effect);
+
+  // Log what the client pushed so we can diagnose the Yandex "opponents see
+  // white dice" bug from journalctl. Only logs slots that were actually
+  // sent (undefined slots are no-ops).
+  const summary: Record<string, string> = {};
+  if (items.dice !== undefined) summary.dice = items.dice ? items.dice.code : 'null';
+  if (items.table !== undefined) summary.table = items.table ? items.table.code : 'null';
+  if (items.effect !== undefined) summary.effect = items.effect ? items.effect.code : 'null';
+  if (Object.keys(summary).length > 0) {
+    logger.info('set_player_items received', { userId, ...summary });
+  }
 }
 
 // Synthetic, per-user item IDs for client-supplied dice/table/effect
@@ -480,12 +491,17 @@ export async function buildAvailableItemsAndOverrides(
   const availableItems: AvailableItem[] = [];
   const seenItemIds = new Set<number>();
   const equipOverrides: PlayerEquipOverride[] = [];
+  // Per-player diagnostic breakdown: which slot resolved via client
+  // override vs DB row. Logged once at the end so a single journalctl
+  // line tells you exactly what each opponent will render with.
+  const perPlayerSummary: Array<Record<string, unknown>> = [];
 
   for (const player of players) {
     const userId = player.user.id;
     if (!userId) continue;
 
     const override: PlayerEquipOverride = { userId };
+    const summary: Record<string, unknown> = { userId };
     const slots: Array<'dice' | 'table' | 'effect'> = ['dice', 'table', 'effect'];
     for (const slot of slots) {
       const clientItem = connections.getClientItemOverride(userId, slot);
@@ -513,6 +529,7 @@ export async function buildAvailableItemsAndOverrides(
         if (slot === 'dice') override.equippedDiceId = id;
         else if (slot === 'table') override.equippedTableId = id;
         else override.equippedEffectId = id;
+        summary[slot] = `client:${clientItem.code}`;
       } else if (dbItemId && !seenItemIds.has(dbItemId)) {
         seenItemIds.add(dbItemId);
         const result = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
@@ -528,7 +545,16 @@ export async function buildAvailableItemsAndOverrides(
             name: row.name,
             config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
           });
+          summary[slot] = `db:${row.code}`;
+        } else {
+          summary[slot] = `db:missing(${dbItemId})`;
         }
+      } else if (dbItemId) {
+        // Already in availableItems from a previous player — still record
+        // that this player resolved via DB so the log line is complete.
+        summary[slot] = `db:${dbItemId}`;
+      } else {
+        summary[slot] = 'none';
       }
     }
 
@@ -539,7 +565,14 @@ export async function buildAvailableItemsAndOverrides(
     ) {
       equipOverrides.push(override);
     }
+    perPlayerSummary.push(summary);
   }
+
+  logger.info('buildAvailableItemsAndOverrides', {
+    players: perPlayerSummary,
+    availableItemsCount: availableItems.length,
+    overridesCount: equipOverrides.length,
+  });
 
   return { availableItems, equipOverrides };
 }
@@ -1567,15 +1600,21 @@ async function handleThrowStart(userId: number, throwPower: number, effectId: nu
   const clientDice = connections.getClientItemOverride(userId, 'dice');
   let diceConfig: Record<string, unknown> | null = null;
   let equippedDiceIdForBroadcast: number | null | undefined = user.equippedDiceId;
+  let diceSource: string;
   if (clientDice && clientDice.config) {
     diceConfig = clientDice.config;
     equippedDiceIdForBroadcast = syntheticItemId(userId, 'dice');
+    diceSource = `client:${clientDice.code}`;
   } else if (user.equippedDiceId) {
     diceConfig = await lobby.getDiceConfig(user.equippedDiceId);
     if (!diceConfig) {
       logger.warn('Dice config not found for throw_start', { userId, diceId: user.equippedDiceId });
+      diceSource = `db:missing(${user.equippedDiceId})`;
+    } else {
+      diceSource = `db:${user.equippedDiceId}`;
     }
   } else {
+    diceSource = 'default:classic_white';
     // Player has no equipped dice (standard dice) - use classic_white config from presets
     diceConfig = {
       baseColor: '#ffffff',
@@ -1592,7 +1631,14 @@ async function handleThrowStart(userId: number, throwPower: number, effectId: nu
       bevelRadius: 0.16, // Match classic_white preset
     };
   }
-  
+
+  logger.info('throw_start broadcast', {
+    userId,
+    lobbyId: conn.lobbyId,
+    diceSource,
+    broadcastDiceId: equippedDiceIdForBroadcast,
+  });
+
   // Broadcast throw_start to all other players with dice config and selected dice info
   // CRITICAL: This must arrive BEFORE throw_frame messages
   broadcastToLobby(conn.lobbyId, {
