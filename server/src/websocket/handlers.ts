@@ -231,6 +231,9 @@ export async function handleMessage(ws: WebSocket, message: any, userId: number 
       case 'mm_leave_queue':
         matchmaking.leaveQueue(userId);
         break;
+      case 'mm_ready':
+        matchmaking.markReady(userId);
+        break;
       case 'sync_yandex_pips':
         await handleSyncYandexPips(userId, message.pips);
         break;

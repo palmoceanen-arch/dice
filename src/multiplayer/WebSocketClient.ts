@@ -598,6 +598,15 @@ export class WebSocketClient {
     this.send({ type: 'mm_leave_queue' });
   }
 
+  // Confirm "I'm ready" for a match the server already broadcast as
+  // `mm_match_found`. The server requires every matched player to send
+  // this before it will start the game; players who don't confirm
+  // before the deadline cause the match to be cancelled and bets
+  // refunded.
+  confirmReady() {
+    this.send({ type: 'mm_ready' });
+  }
+
   getPlayerStats() {
     this.send({ type: 'get_player_stats' });
   }
