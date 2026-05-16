@@ -385,6 +385,10 @@ const MmLeaveQueueSchema = z.object({
   type: z.literal('mm_leave_queue'),
 });
 
+const MmReadySchema = z.object({
+  type: z.literal('mm_ready'),
+});
+
 const SyncYandexPipsSchema = z.object({
   type: z.literal('sync_yandex_pips'),
   pips: z.number().int().min(0).max(1000000000),
@@ -449,6 +453,7 @@ const MessageSchemas = {
   cancel_bet: CancelBetSchema,
   mm_join_queue: MmJoinQueueSchema,
   mm_leave_queue: MmLeaveQueueSchema,
+  mm_ready: MmReadySchema,
   sync_yandex_pips: SyncYandexPipsSchema,
   get_player_stats: GetPlayerStatsSchema,
   _client_ping: ClientPingSchema,
