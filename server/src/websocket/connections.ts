@@ -31,13 +31,17 @@ export function addConnection(user: User, ws: WebSocket): void {
     connectionHealth: 'good',
     lastPongTime: Date.now()
   });
-  userIdByTelegramId.set(user.telegramId, user.id);
+  if (user.telegramId !== null && user.telegramId !== undefined) {
+    userIdByTelegramId.set(user.telegramId, user.id);
+  }
 }
 
 export function removeConnection(userId: number): void {
   const conn = connections.get(userId);
   if (conn) {
-    userIdByTelegramId.delete(conn.user.telegramId);
+    if (conn.user.telegramId !== null && conn.user.telegramId !== undefined) {
+      userIdByTelegramId.delete(conn.user.telegramId);
+    }
     connections.delete(userId);
   }
 }

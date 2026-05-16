@@ -1,7 +1,11 @@
 // User types
+export type AuthPlatform = 'telegram' | 'yandex';
+
 export interface User {
   id: number;
-  telegramId: number;
+  telegramId: number | null;
+  yandexId: string | null;
+  platform: AuthPlatform;
   nickname: string;
   telegramUsername: string | null;
   firstName: string | null;
@@ -21,6 +25,18 @@ export interface TelegramUser {
   last_name?: string;
   username?: string;
   photo_url?: string;
+}
+
+// Yandex Games player payload (subset of ysdk.getPlayer() result we care about).
+// Yandex returns the canonical id in the signed payload under `uuid`; the public
+// name / avatar URLs come from the unsigned player object.
+export interface YandexPlayer {
+  uuid: string;
+  publicName?: string;
+  avatarUrlSmall?: string;
+  avatarUrlMedium?: string;
+  avatarUrlLarge?: string;
+  lang?: string;
 }
 
 // Item types
@@ -76,6 +92,12 @@ export interface Lobby {
   status: LobbyStatus;
   selectedTableId: number | null;
   maxPlayers: number;
+  // When true, the lobby is "no-bet": the in-round BettingManager flow
+  // is skipped and the winner(s) receive a fixed pip prize at game end.
+  // Used by the Yandex Games build where real-money / pip-stake betting
+  // is not allowed by the portal's compliance rules. Defaults to false
+  // (classic Telegram behaviour).
+  noBet: boolean;
   createdAt: Date;
   startedAt: Date | null;
   finishedAt: Date | null;

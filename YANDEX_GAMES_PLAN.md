@@ -117,15 +117,19 @@
 2. Если позже подключим свой WebSocket-сервер для мультиплеера, его домен надо будет добавить во вкладке **CSP** в консоли (по умолчанию все внешние хосты заблокированы).
 3. Внешние шрифты `fonts.googleapis.com` оставлены — этот хост в whitelist Я.Игр.
 
-## Следующие шаги (multiplayer iteration)
+## Multiplayer iteration (статус)
 
-После того как соло-билд пройдёт модерацию:
-1. Поднять/настроить WebSocket-сервер (уже есть `server/`, нужно только убрать Telegram-зависимости из auth).
-2. В `server/src/services/auth.ts` добавить ветку для проверки Я.Подписи (`player.signature`, base64, HMAC-SHA256 с приватным ключом из консоли).
-3. Заменить `wsClient`-стаб на реальный клиент в Яндекс-билде (либо отдельный вариант стаба, который коннектится к серверу).
-4. Подать домен сервера в CSP консоли Я.Игр.
-5. Реализовать UI лобби под Я.Игры (без Telegram-инвайтов — приглашение по 8-символьному коду).
-6. Включить Palmo's Dice и Poker Dice без ставок (победитель получает фиксированное количество pips).
+Все 6 пунктов реализованы в ветке `devin/1778859295-yandex-multiplayer`
+(PR #2). Подробности — в `YANDEX_MULTIPLAYER.md`.
+
+| # | Шаг | Где сделано |
+| --- | --- | --- |
+| 1 | Сервер без Telegram-зависимостей в auth | `server/src/services/auth.ts` — добавлена `validateYandexSignature` |
+| 2 | Проверка `player.signature` (HMAC-SHA256) | `server/src/services/auth.ts`, ключ из `YANDEX_APP_SECRET` |
+| 3 | Реальный WS-клиент в Я-билде | `src/yandex/stubs/WebSocketClient.ts` — `YandexLiveWSClient` |
+| 4 | CSP-домен сервера | Нужно добавить `wss://street-dice.online` в **CSP** консоли Я.Игр |
+| 5 | Лобби-UI с 8-символьным кодом | `src/yandex/MultiplayerLobbyUI.ts` |
+| 6 | Palmo's Dice / Poker Dice без ставок | `Lobby.noBet` + `endGame` награждает победителя фикс. pips |
 
 ## Чек-лист модерации Я.Игр
 

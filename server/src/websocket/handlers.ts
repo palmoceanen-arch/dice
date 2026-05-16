@@ -1,7 +1,7 @@
 import type { WebSocket } from 'ws';
 import type { GameMode } from '../types/index.js';
-import { validateInitData, parseInitDataUnsafe, extractStartParam } from '../services/auth.js';
-import { findOrCreateUser, getUserInventory, getShopItems, setNickname, equipItem, getUserByUsername, getUserById, updatePips, getUserPips } from '../services/users.js';
+import { validateInitData, parseInitDataUnsafe, extractStartParam, validateYandexSignature, parseYandexPlayerUnsafe } from '../services/auth.js';
+import { findOrCreateUser, findOrCreateYandexUser, getUserInventory, getShopItems, setNickname, equipItem, getUserByUsername, getUserById, updatePips, getUserPips } from '../services/users.js';
 import { getFriends, addFriend, removeFriend, sendFriendRequest, getPendingFriendRequests, acceptFriendRequest, declineFriendRequest } from '../services/friends.js';
 import { getReferralStats, getReferralList } from '../services/referrals.js';
 import { activateBoost, getActiveBoosts, getBoostState } from '../services/boosts.js';
@@ -26,6 +26,9 @@ export async function handleMessage(ws: WebSocket, message: any, userId: number 
   // Auth message - no userId required
   if (message.type === 'auth') {
     metricsCollector.authAttempt();
+    if (message.platform === 'yandex') {
+      return handleYandexAuth(ws, message.signedData ?? null, message.playerInfo ?? null);
+    }
     return handleAuth(ws, message.initData);
   }
   
@@ -92,7 +95,13 @@ export async function handleMessage(ws: WebSocket, message: any, userId: number 
         
       // Lobby
       case 'create_lobby':
-        await handleCreateLobby(userId, message.gameMode, message.screenWidth, message.screenHeight);
+        await handleCreateLobby(
+          userId,
+          message.gameMode,
+          message.screenWidth,
+          message.screenHeight,
+          message.noBet === true,
+        );
         break;
       case 'join_lobby':
         await handleJoinLobby(userId, message.lobbyId, message.screenWidth, message.screenHeight);
@@ -227,6 +236,68 @@ async function handleAdminGift(targetUserId: number, item: any): Promise<void> {
 }
 
 // === Auth ===
+async function handleYandexAuth(
+  ws: WebSocket,
+  signedData: string | null,
+  playerInfo: { uuid?: string; publicName?: string; avatarUrlSmall?: string; avatarUrlMedium?: string; avatarUrlLarge?: string; lang?: string } | null,
+): Promise<number | null> {
+  // Verified payload (uuid) takes precedence over playerInfo.uuid. In prod we
+  // require a valid HMAC; in dev we fall back to the unsafe parser so local
+  // npm run dev works without YANDEX_APP_SECRET set.
+  const verified = signedData ? validateYandexSignature(signedData) : null;
+
+  let yandexPlayer: import('../types/index.js').YandexPlayer | null = null;
+  if (verified) {
+    yandexPlayer = {
+      uuid: verified.uuid,
+      publicName: playerInfo?.publicName,
+      avatarUrlSmall: playerInfo?.avatarUrlSmall,
+      avatarUrlMedium: playerInfo?.avatarUrlMedium,
+      avatarUrlLarge: playerInfo?.avatarUrlLarge,
+      lang: playerInfo?.lang,
+    };
+  } else if (config.isDev) {
+    yandexPlayer = parseYandexPlayerUnsafe(signedData, playerInfo ?? null);
+  }
+
+  if (!yandexPlayer) {
+    metricsCollector.authFailure();
+    logger.warn('Yandex auth failed', { hasSignedData: !!signedData });
+    ws.send(JSON.stringify({ type: 'auth_error', message: 'Invalid Yandex signature' }));
+    return null;
+  }
+
+  const user = await findOrCreateYandexUser(yandexPlayer);
+  const inventory = await getUserInventory(user.id);
+  const activeBoosts = await getActiveBoosts(user.id);
+
+  setUserIdForWs(ws, user.id);
+  connections.addConnection(user, ws);
+
+  const reconnectInfo = lobby.canReconnect(user.id);
+
+  ws.send(JSON.stringify({
+    type: 'auth_success',
+    user,
+    inventory,
+    activeBoosts,
+    canReconnect: reconnectInfo ? {
+      lobbyId: reconnectInfo.lobbyId,
+      timeLeft: reconnectInfo.timeLeft,
+    } : null,
+  }));
+
+  metricsCollector.authSuccess();
+  logger.info('Yandex user authenticated', {
+    userId: user.id,
+    yandexId: user.yandexId,
+    nickname: user.nickname,
+    canReconnect: !!reconnectInfo,
+  });
+
+  return user.id;
+}
+
 async function handleAuth(ws: WebSocket, initData: string): Promise<number | null> {
   const telegramUser = config.isDev 
     ? parseInitDataUnsafe(initData) 
@@ -602,15 +673,21 @@ async function handleGetReferralList(userId: number): Promise<void> {
 }
 
 // === Lobby ===
-async function handleCreateLobby(userId: number, gameMode: GameMode, screenWidth?: number, screenHeight?: number): Promise<void> {
+async function handleCreateLobby(
+  userId: number,
+  gameMode: GameMode,
+  screenWidth?: number,
+  screenHeight?: number,
+  noBet: boolean = false,
+): Promise<void> {
   // Check if already in a lobby
   const conn = connections.getConnection(userId);
   if (conn?.lobbyId) {
     connections.send(userId, { type: 'error', message: 'Already in a lobby' });
     return;
   }
-  
-  const newLobby = await lobby.createLobby(userId, gameMode);
+
+  const newLobby = await lobby.createLobby(userId, gameMode, noBet);
   metricsCollector.lobbyCreated();
   
   // Store screen size
@@ -644,8 +721,12 @@ async function handleJoinLobby(userId: number, lobbyId: string, screenWidth?: nu
     const lobbyData = await lobby.getLobby(lobbyId);
     connections.send(userId, { type: 'lobby_joined', lobby: lobbyData });
     
-    // Initialize betting if 2+ players
-    if (lobbyData && lobbyData.players.length >= 2) {
+    // Initialize betting if 2+ players (skip entirely for no-bet lobbies).
+    if (
+      lobbyData &&
+      !lobby.isNoBetLobby(lobbyId) &&
+      lobbyData.players.length >= 2
+    ) {
       if (!BettingManager.isActive(lobbyId)) {
         BettingManager.initialize(lobbyId, 10);
         logger.info('[BETTING] Initialized for lobby', { lobbyId, playerCount: lobbyData.players.length });
@@ -933,10 +1014,13 @@ async function handleStartGame(userId: number): Promise<void> {
     return;
   }
   
-  // Check if betting is required (2+ players)
+  // Check if betting is required (2+ players). No-bet lobbies (e.g. the
+  // Yandex Games build) always skip the betting UI and go straight into
+  // gameplay regardless of player count.
   const playerIds = lobby.getLobbyPlayers(conn.lobbyId);
-  
-  if (playerIds.length >= 2) {
+  const skipBetting = lobby.isNoBetLobby(conn.lobbyId);
+
+  if (!skipBetting && playerIds.length >= 2) {
     // Check if betting is already active
     if (BettingManager.isActive(conn.lobbyId)) {
       const state = BettingManager.getState(conn.lobbyId);

@@ -8,6 +8,7 @@
     "start": "node dist/index.js",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:migrate-referrals": "tsx src/db/migrate-referrals.ts",
+    "db:migrate-yandex": "tsx src/db/migrate-yandex.ts",
     "db:add-index": "tsx src/db/add-index.ts",
     "db:add-missing-indexes": "tsx src/db/add-missing-indexes.ts",
     "db:cleanup": "tsx src/db/cleanup.ts",

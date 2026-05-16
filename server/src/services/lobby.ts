@@ -13,6 +13,7 @@ interface LobbyRow {
   status: string;
   selected_table_id: number | null;
   max_players: number;
+  no_bet?: boolean | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -42,6 +43,9 @@ const activeLobbies = new Map<string, {
   status: 'voting' | 'playing' | 'finished';
   gameMode: GameMode;
   hostId: number;
+  // Snapshot of the lobby's `no_bet` flag so betting-flow checks don't have
+  // to hit the database during the start_game / endGame hot paths.
+  noBet: boolean;
 }>();
 
 // Cache dice configs to avoid DB queries during throws
@@ -96,29 +100,33 @@ export async function getDiceConfig(diceId: number): Promise<Record<string, unkn
   return config;
 }
 
-export async function createLobby(hostId: number, gameMode: GameMode): Promise<Lobby> {
+export async function createLobby(
+  hostId: number,
+  gameMode: GameMode,
+  noBet: boolean = false,
+): Promise<Lobby> {
   const id = nanoid(8);
-  
+
   const result = await query<LobbyRow>(
-    `INSERT INTO lobbies (id, host_id, game_mode, status, max_players)
-     VALUES ($1, $2, $3, 'voting', $4)
+    `INSERT INTO lobbies (id, host_id, game_mode, status, max_players, no_bet)
+     VALUES ($1, $2, $3, 'voting', $4, $5)
      RETURNING *`,
-    [id, hostId, gameMode, MAX_PLAYERS]
+    [id, hostId, gameMode, MAX_PLAYERS, noBet]
   );
-  
+
   // Add host as player
   await query(
     `INSERT INTO lobby_players (lobby_id, user_id, status)
      VALUES ($1, $2, 'joined')`,
     [id, hostId]
   );
-  
+
   // Update connection
   const conn = connections.getConnection(hostId);
   if (conn) {
     conn.lobbyId = id;
   }
-  
+
   // Init in-memory state
   activeLobbies.set(id, {
     players: new Set([hostId]),
@@ -127,9 +135,17 @@ export async function createLobby(hostId: number, gameMode: GameMode): Promise<L
     status: 'voting',
     gameMode,
     hostId,
+    noBet,
   });
-  
+
   return mapLobby(result.rows[0]);
+}
+
+// Fast accessor for the no-bet flag, used by handleStartGame / endGame in
+// hot paths where we want to avoid an extra DB round-trip.
+export function isNoBetLobby(lobbyId: string): boolean {
+  const state = activeLobbies.get(lobbyId);
+  return !!state?.noBet;
 }
 
 export async function getLobby(lobbyId: string): Promise<LobbyWithPlayers | null> {
@@ -164,6 +180,8 @@ export async function getLobby(lobbyId: string): Promise<LobbyWithPlayers | null
       user: {
         id: row.user_id,
         telegramId: 0,
+        yandexId: null,
+        platform: 'telegram',
         nickname: row.nickname,
         telegramUsername: row.telegram_username,
         firstName: null,
@@ -483,6 +501,7 @@ function mapLobby(row: LobbyRow): Lobby {
     status: row.status as 'voting' | 'waiting' | 'playing' | 'finished',
     selectedTableId: row.selected_table_id,
     maxPlayers: row.max_players,
+    noBet: row.no_bet === true,
     createdAt: new Date(row.created_at),
     startedAt: row.started_at ? new Date(row.started_at) : null,
     finishedAt: row.finished_at ? new Date(row.finished_at) : null,

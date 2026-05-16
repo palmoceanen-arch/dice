@@ -11,6 +11,12 @@ export const config = {
   bot: {
     token: process.env.BOT_TOKEN || '',
   },
+  yandex: {
+    // Application secret key from Yandex Games console (Партнерский интерфейс).
+    // Used to verify HMAC-SHA256 player signatures from the Yandex Games SDK.
+    // Leave empty to disable Yandex auth on this server (Telegram-only mode).
+    appSecret: process.env.YANDEX_APP_SECRET || '',
+  },
   server: {
     port: parseInt(process.env.PORT || '3001'),
     wsPort: parseInt(process.env.WS_PORT || '3002'),
