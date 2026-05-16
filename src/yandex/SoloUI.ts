@@ -86,6 +86,18 @@ function ensureStyles(): void {
       background: rgba(255,255,255,0.08); color: #fff; border: 0;
       font-family: inherit;
     }
+    .yui-segmented {
+      display: inline-flex; gap: 4px; flex-wrap: wrap;
+    }
+    .yui-segmented button {
+      padding: 6px 12px; border-radius: 8px; border: 0;
+      background: rgba(255,255,255,0.08); color: #fff;
+      font-family: inherit; font-size: 13px; font-weight: 600;
+      cursor: pointer;
+    }
+    .yui-segmented button.active {
+      background: #ffd84d; color: #1a1a1a;
+    }
     .yui-btn {
       padding: 10px 14px; border-radius: 8px; border: 0;
       cursor: pointer; font-weight: 700; font-size: 14px;
@@ -341,35 +353,68 @@ export class SoloUI {
     }
   }
 
+  /**
+   * Settings panel. Rebuilt every time it opens so language toggles
+   * re-render the localized labels, and so the current control-mode /
+   * graphics selection always reflects the latest persisted state.
+   */
   private openSettings(): void {
     if (this.settingsOverlay) {
-      this.settingsOverlay.style.display = 'flex';
-      return;
+      this.settingsOverlay.remove();
+      this.settingsOverlay = null;
     }
     this.settingsOverlay = document.createElement('div');
     this.settingsOverlay.className = 'yui-settings-overlay';
     const settings = cloudSave.getSettings();
+    const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    const game = this.game as any;
+    const controlMode: 'motion' | 'manual' =
+      typeof game.getControlMode === 'function' ? game.getControlMode() : 'motion';
+    const gfx = settings.graphics;
+    const lang = getCurrentLanguage();
+
+    const segGraphics = `
+      <div class="yui-segmented" data-group="graphics">
+        <button data-value="low" class="${gfx === 'low' ? 'active' : ''}">${escapeHtml(t('settings.graphicsLow') || 'Low')}</button>
+        <button data-value="medium" class="${gfx === 'medium' ? 'active' : ''}">${escapeHtml(t('settings.graphicsMedium') || 'Medium')}</button>
+        <button data-value="high" class="${gfx === 'high' ? 'active' : ''}">${escapeHtml(t('settings.graphicsHigh') || 'High')}</button>
+      </div>
+    `;
+    const segLang = `
+      <div class="yui-segmented" data-group="lang">
+        <button data-value="en" class="${lang === 'en' ? 'active' : ''}">English</button>
+        <button data-value="ru" class="${lang === 'ru' ? 'active' : ''}">Русский</button>
+      </div>
+    `;
+    // Control mode only makes sense on a touch device — motion mode reads
+    // devicemotion events that desktops don't fire.
+    const segControls = isTouch
+      ? `
+        <div class="yui-row">
+          <label>${escapeHtml(t('settings.controls') || 'Controls')}</label>
+          <div class="yui-segmented" data-group="controls">
+            <button data-value="motion" class="${controlMode === 'motion' ? 'active' : ''}">${escapeHtml(t('settings.controlsMotion') || 'Motion')}</button>
+            <button data-value="manual" class="${controlMode === 'manual' ? 'active' : ''}">${escapeHtml(t('settings.controlsManual') || 'Manual')}</button>
+          </div>
+        </div>
+      `
+      : '';
+
     this.settingsOverlay.innerHTML = `
       <div class="yui-settings-panel">
         <h2>${escapeHtml(t('settings.title') || 'Settings')}</h2>
+        ${segControls}
         <div class="yui-row">
-          <label for="yui-graphics">${escapeHtml(t('settings.graphics') || 'Graphics')}</label>
-          <select id="yui-graphics">
-            <option value="low" ${settings.graphics === 'low' ? 'selected' : ''}>Low</option>
-            <option value="medium" ${settings.graphics === 'medium' ? 'selected' : ''}>Medium</option>
-            <option value="high" ${settings.graphics === 'high' ? 'selected' : ''}>High</option>
-          </select>
+          <label>${escapeHtml(t('settings.graphics') || 'Graphics')}</label>
+          ${segGraphics}
         </div>
         <div class="yui-row">
           <label for="yui-volume">${escapeHtml(t('settings.sound') || 'Sound')}</label>
           <input id="yui-volume" type="range" min="0" max="1" step="0.05" value="${settings.soundVolume}" />
         </div>
         <div class="yui-row">
-          <label for="yui-lang">${escapeHtml(t('settings.language') || 'Language')}</label>
-          <select id="yui-lang">
-            <option value="en" ${getCurrentLanguage() === 'en' ? 'selected' : ''}>English</option>
-            <option value="ru" ${getCurrentLanguage() === 'ru' ? 'selected' : ''}>Русский</option>
-          </select>
+          <label>${escapeHtml(t('settings.language') || 'Language')}</label>
+          ${segLang}
         </div>
         <div class="yui-row">
           <button class="yui-btn ghost" id="yui-close">${escapeHtml(t('buttons.close') || 'Close')}</button>
@@ -378,26 +423,49 @@ export class SoloUI {
     `;
     document.body.appendChild(this.settingsOverlay);
 
-    const graphicsEl = this.settingsOverlay.querySelector<HTMLSelectElement>('#yui-graphics');
-    graphicsEl?.addEventListener('change', () => {
-      const value = graphicsEl.value as 'low' | 'medium' | 'high';
-      cloudSave.updateSettings({ graphics: value });
-      (this.game as any).setGraphicsQuality?.(value);
+    const overlay = this.settingsOverlay;
+    const onSegClick = (group: string, handler: (value: string) => void) => {
+      overlay.querySelectorAll(`[data-group="${group}"] button`).forEach((el) => {
+        el.addEventListener('click', () => {
+          const value = (el as HTMLElement).dataset.value!;
+          overlay
+            .querySelectorAll(`[data-group="${group}"] button`)
+            .forEach((b) => b.classList.remove('active'));
+          (el as HTMLElement).classList.add('active');
+          handler(value);
+        });
+      });
+    };
+
+    onSegClick('graphics', (value) => {
+      const v = value as 'low' | 'medium' | 'high';
+      cloudSave.updateSettings({ graphics: v });
+      (this.game as any).setGraphicsQuality?.(v);
     });
-    const volEl = this.settingsOverlay.querySelector<HTMLInputElement>('#yui-volume');
+    onSegClick('lang', (value) => {
+      setLanguage(value as Language);
+      cloudSave.updateSettings({ language: value as Language });
+      // Re-open so labels re-render in the newly selected language.
+      this.openSettings();
+    });
+    if (isTouch) {
+      onSegClick('controls', (value) => {
+        const mode = value as 'motion' | 'manual';
+        if (typeof game.setControlMode === 'function') {
+          game.setControlMode(mode);
+        }
+      });
+    }
+
+    const volEl = overlay.querySelector<HTMLInputElement>('#yui-volume');
     volEl?.addEventListener('input', () => {
       const v = parseFloat(volEl.value);
       cloudSave.updateSettings({ soundVolume: v });
       (this.game as any).setSoundVolume?.(v);
     });
-    const langEl = this.settingsOverlay.querySelector<HTMLSelectElement>('#yui-lang');
-    langEl?.addEventListener('change', () => {
-      const lang = langEl.value as Language;
-      setLanguage(lang);
-      cloudSave.updateSettings({ language: lang });
-    });
-    this.settingsOverlay.querySelector('#yui-close')?.addEventListener('click', () => {
-      if (this.settingsOverlay) this.settingsOverlay.style.display = 'none';
+    overlay.querySelector('#yui-close')?.addEventListener('click', () => {
+      overlay.remove();
+      this.settingsOverlay = null;
     });
   }
 

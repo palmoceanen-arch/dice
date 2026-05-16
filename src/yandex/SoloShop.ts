@@ -146,8 +146,23 @@ function ensureStyles(): void {
     }
     .yshop-list {
       flex: 1; overflow-y: auto; padding: 16px 20px 24px;
-      display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
       gap: 12px;
+    }
+    /* On phones the modal is the full viewport width, so auto-fill with
+       a 180px floor stretches every card to ~360px tall (aspect-ratio
+       1/1 preview), making the shop scroll forever. Force a 2-up grid
+       below 600px and slightly reduce padding for a denser layout. */
+    @media (max-width: 600px) {
+      .yshop-list {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+        padding: 12px 12px 20px;
+      }
+      .yshop-card { padding: 8px; }
+      .yshop-card .name { font-size: 13px; }
+      .yshop-card .rarity { font-size: 11px; }
+      .yshop-card .desc { font-size: 11px; min-height: 24px; }
     }
     .yshop-card {
       display: flex; flex-direction: column; gap: 6px;

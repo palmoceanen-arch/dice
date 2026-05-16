@@ -64,8 +64,20 @@ function ensureStyles(): void {
       letter-spacing: 0.08em; margin-bottom: 8px;
     }
     .yinv-grid {
-      display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
       gap: 10px;
+    }
+    /* Mobile inventory: lock to a 2-column grid so cards stay compact
+       and previews don't blow up to the full viewport width. */
+    @media (max-width: 600px) {
+      .yinv-list { padding: 12px 12px 20px; gap: 16px; }
+      .yinv-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+      }
+      .yinv-card { padding: 8px; }
+      .yinv-card .name { font-size: 12px; }
+      .yinv-card .meta { font-size: 10px; }
     }
     .yinv-card {
       display: flex; flex-direction: column; gap: 6px;
