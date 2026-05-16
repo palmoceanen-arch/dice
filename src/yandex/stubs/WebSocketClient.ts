@@ -24,6 +24,7 @@
 import { cloudSave } from '../cloudSave';
 import { WebSocketClient } from '../../multiplayer/WebSocketClient';
 import { getYandexAuth } from '../yandexAuth';
+import presets from '../../../shared/presets.json';
 
 export interface Friend {
   id: number;
@@ -179,6 +180,66 @@ class YandexLiveWSClient extends WebSocketClient {
           playerInfo: snap.playerInfo,
         };
       },
+    });
+
+    // The server's DB stores `users.equipped_dice_id` etc., but on Yandex
+    // every user is permanently equipped with `classic_white` in the DB
+    // because Cloud Save is the source of truth for the inventory. Push
+    // the actual local equip state to the server with `set_player_items`
+    // so opponents see the right skin in multiplayer broadcasts.
+    //
+    // We send (a) after every successful auth — important because reconnects
+    // wipe the server-side `Connection.clientItems` — and (b) any time the
+    // local inventory or custom dice changes while connected, so equipping
+    // a new dice in the middle of a session takes effect on the next throw.
+    this.on('auth_success', () => {
+      this.sendPlayerItemsFromCloudSave();
+    });
+    // Live for the lifetime of the page — no need to unsubscribe.
+    cloudSave.onInventoryChange(() => {
+      if (this.isAuthenticated) this.sendPlayerItemsFromCloudSave();
+    });
+  }
+
+  // Synthesize a `set_player_items` payload from the current Cloud Save
+  // state and ship it to the server. `code` is just telemetry — the
+  // server treats `config` as authoritative.
+  private sendPlayerItemsFromCloudSave(): void {
+    const inv = cloudSave.getInventory();
+    const dicePresets = (presets as any).dice as Record<string, { name: string; config: unknown }> | undefined;
+    const tablePresets = (presets as any).tables as Record<string, { name: string; config: unknown }> | undefined;
+
+    // Dice: a saved custom config (design-key flow) overrides the equipped
+    // preset, mirroring `cloudSave.getEquippedDiceConfig`.
+    const customDice = cloudSave.getCustomDiceConfig();
+    let diceSlot: { code: string; name: string; config: Record<string, unknown> | null } | null = null;
+    if (customDice) {
+      diceSlot = { code: 'yandex_custom', name: 'Custom dice', config: customDice as Record<string, unknown> };
+    } else {
+      const id = inv.equippedDiceId;
+      const entry = id ? dicePresets?.[id] : undefined;
+      if (entry) {
+        diceSlot = { code: id, name: entry.name, config: entry.config as Record<string, unknown> };
+      }
+    }
+
+    // Table.
+    let tableSlot: { code: string; name: string; config: Record<string, unknown> | null } | null = null;
+    {
+      const id = inv.equippedTableId;
+      const entry = id ? tablePresets?.[id] : undefined;
+      if (entry) {
+        tableSlot = { code: id, name: entry.name, config: entry.config as Record<string, unknown> };
+      }
+    }
+
+    // Effects aren't surfaced in the Yandex UI yet — leave the slot
+    // unset so the server keeps its existing (DB or previous override)
+    // value.
+    super.send({
+      type: 'set_player_items',
+      dice: diceSlot,
+      table: tableSlot,
     });
   }
 

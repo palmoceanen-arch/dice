@@ -145,11 +145,9 @@ export class Dice {
   updateConfig(config: DiceConfig, bevelSegments: number = 3) {
     // Skip update if config is the same (avoid expensive material recreation)
     if (!this.isConfigDifferent(config)) {
-      console.log('[Dice] Config unchanged, skipping update');
       return;
     }
     
-    console.log('[Dice] Updating config (config changed)');
     
     const oldBevelRadius = this.config.bevelRadius;
     this.config = mergeDiceConfig(config);
@@ -174,11 +172,9 @@ export class Dice {
     
     if (!newMaterials) {
       // Create new materials and cache them
-      console.log('[Dice] Creating and caching new materials');
       newMaterials = this.createMaterials();
       Dice.materialCache.set(cacheKey, newMaterials);
     } else {
-      console.log('[Dice] Using cached materials');
     }
     
     // Dispose old materials only if they're not in cache

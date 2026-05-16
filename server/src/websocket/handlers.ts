@@ -202,6 +202,17 @@ export async function handleMessage(ws: WebSocket, message: any, userId: number 
       case 'save_custom_dice':
         await handleSaveCustomDice(userId, message.config);
         break;
+
+      // Yandex Games: push the player's locally-equipped dice / table /
+      // effect configs to the server so the server can broadcast them to
+      // opponents in multiplayer.
+      case 'set_player_items':
+        handleSetPlayerItems(userId, {
+          dice: message.dice,
+          table: message.table,
+          effect: message.effect,
+        });
+        break;
       
       // Reactions
       case 'send_reaction':
@@ -411,6 +422,144 @@ async function handleSetNickname(userId: number, nickname: string): Promise<void
     connections.send(userId, { type: 'nickname_changed', nickname });
   } else {
     connections.send(userId, { type: 'error', message: 'Nickname is invalid or already taken' });
+  }
+}
+
+// Stash the client-supplied dice/table/effect overrides on the
+// connection. See `connections.ClientItemOverride` for the rationale.
+// Called synchronously by the message dispatcher — no DB writes, no
+// broadcasts; the next `game_started` / `throw_start` will pick the
+// overrides up.
+function handleSetPlayerItems(
+  userId: number,
+  items: {
+    dice?: connections.ClientItemOverride | null;
+    table?: connections.ClientItemOverride | null;
+    effect?: connections.ClientItemOverride | null;
+  },
+): void {
+  connections.setClientItemOverride(userId, 'dice', items.dice);
+  connections.setClientItemOverride(userId, 'table', items.table);
+  connections.setClientItemOverride(userId, 'effect', items.effect);
+}
+
+// Synthetic, per-user item IDs for client-supplied dice/table/effect
+// configs (Yandex Cloud Save). Chosen well above the real `item_catalog`
+// id range so they cannot collide with any DB row. The shape matches
+// what client code uses to key configs in `availableItems`.
+const SYNTHETIC_ITEM_ID_OFFSET = 1_000_000_000;
+function syntheticItemId(userId: number, slot: 'dice' | 'table' | 'effect'): number {
+  const slotOffset = slot === 'dice' ? 1 : slot === 'table' ? 2 : 3;
+  return SYNTHETIC_ITEM_ID_OFFSET + userId * 10 + slotOffset;
+}
+
+// Build the `availableItems` payload for a game_started broadcast,
+// merging DB-equipped items (Telegram path) with client-supplied
+// overrides (Yandex path). Also returns the per-player effective IDs
+// the client should treat as each player's equipped slot, so the
+// `lobby.players[].user.equippedDiceId` fields can be patched to match.
+export interface LobbyPlayerLike {
+  user: { id: number; equippedDiceId: number | null; equippedTableId: number | null; equippedEffectId: number | null };
+}
+export interface AvailableItem {
+  id: number;
+  type: string;
+  code: string;
+  name: string;
+  config: Record<string, unknown> | null;
+}
+export interface PlayerEquipOverride {
+  userId: number;
+  equippedDiceId?: number;
+  equippedTableId?: number;
+  equippedEffectId?: number;
+}
+export async function buildAvailableItemsAndOverrides(
+  players: LobbyPlayerLike[],
+): Promise<{ availableItems: AvailableItem[]; equipOverrides: PlayerEquipOverride[] }> {
+  const availableItems: AvailableItem[] = [];
+  const seenItemIds = new Set<number>();
+  const equipOverrides: PlayerEquipOverride[] = [];
+
+  for (const player of players) {
+    const userId = player.user.id;
+    if (!userId) continue;
+
+    const override: PlayerEquipOverride = { userId };
+    const slots: Array<'dice' | 'table' | 'effect'> = ['dice', 'table', 'effect'];
+    for (const slot of slots) {
+      const clientItem = connections.getClientItemOverride(userId, slot);
+      const dbItemId =
+        slot === 'dice'
+          ? player.user.equippedDiceId
+          : slot === 'table'
+            ? player.user.equippedTableId
+            : player.user.equippedEffectId;
+
+      if (clientItem) {
+        // Client supplied an override — synthesize an id and inject the
+        // config directly into availableItems.
+        const id = syntheticItemId(userId, slot);
+        if (!seenItemIds.has(id)) {
+          seenItemIds.add(id);
+          availableItems.push({
+            id,
+            type: slot,
+            code: clientItem.code,
+            name: clientItem.name,
+            config: clientItem.config,
+          });
+        }
+        if (slot === 'dice') override.equippedDiceId = id;
+        else if (slot === 'table') override.equippedTableId = id;
+        else override.equippedEffectId = id;
+      } else if (dbItemId && !seenItemIds.has(dbItemId)) {
+        seenItemIds.add(dbItemId);
+        const result = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
+          'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
+          [dbItemId],
+        );
+        if (result.rows[0]) {
+          const row = result.rows[0];
+          availableItems.push({
+            id: row.id,
+            type: row.type,
+            code: row.code,
+            name: row.name,
+            config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
+          });
+        }
+      }
+    }
+
+    if (
+      override.equippedDiceId !== undefined ||
+      override.equippedTableId !== undefined ||
+      override.equippedEffectId !== undefined
+    ) {
+      equipOverrides.push(override);
+    }
+  }
+
+  return { availableItems, equipOverrides };
+}
+
+// Apply client-side equip overrides to a lobby payload so opponents see
+// the synthetic IDs and can match them up with `availableItems`.
+export function applyEquipOverridesToLobby(
+  lobbyPayload: { players?: LobbyPlayerLike[] } | null | undefined,
+  overrides: PlayerEquipOverride[],
+): void {
+  if (!lobbyPayload?.players || overrides.length === 0) return;
+  const byUser = new Map(overrides.map((o) => [o.userId, o]));
+  for (const player of lobbyPayload.players) {
+    const userId = player.user.id;
+    if (!userId) continue;
+    const o = byUser.get(userId);
+    if (!o) continue;
+    if (o.equippedDiceId !== undefined) player.user.equippedDiceId = o.equippedDiceId;
+    if (o.equippedTableId !== undefined) player.user.equippedTableId = o.equippedTableId;
+    if (o.equippedEffectId !== undefined) player.user.equippedEffectId = o.equippedEffectId;
   }
 }
 
@@ -1117,84 +1266,37 @@ async function handleStartGame(userId: number): Promise<void> {
       }
     }
     
-    // Collect all equipped items from all players for client-side preloading
-    const availableItems: any[] = [];
-    const seenItemIds = new Set<number>();
-    
-    if (updatedLobby) {
-      for (const player of updatedLobby.players) {
-        // Add dice
-        if (player.user.equippedDiceId && !seenItemIds.has(player.user.equippedDiceId)) {
-          seenItemIds.add(player.user.equippedDiceId);
-          const diceResult = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
-            'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
-            [player.user.equippedDiceId]
-          );
-          if (diceResult.rows[0]) {
-            const row = diceResult.rows[0];
-            availableItems.push({
-              id: row.id,
-              type: row.type,
-              code: row.code,
-              name: row.name,
-              config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-            });
-          }
-        }
-        
-        // Add table
-        if (player.user.equippedTableId && !seenItemIds.has(player.user.equippedTableId)) {
-          seenItemIds.add(player.user.equippedTableId);
-          const tableResult = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
-            'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
-            [player.user.equippedTableId]
-          );
-          if (tableResult.rows[0]) {
-            const row = tableResult.rows[0];
-            availableItems.push({
-              id: row.id,
-              type: row.type,
-              code: row.code,
-              name: row.name,
-              config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-            });
-          }
-        }
-        
-        // Add effect
-        if (player.user.equippedEffectId && !seenItemIds.has(player.user.equippedEffectId)) {
-          seenItemIds.add(player.user.equippedEffectId);
-          const effectResult = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
-            'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
-            [player.user.equippedEffectId]
-          );
-          if (effectResult.rows[0]) {
-            const row = effectResult.rows[0];
-            availableItems.push({
-              id: row.id,
-              type: row.type,
-              code: row.code,
-              name: row.name,
-              config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-            });
-          }
-        }
-      }
-    }
+    // Collect all equipped items (DB-backed and client-supplied) so the
+    // client can preload every other player's dice / table / effect
+    // config for replays. Patches lobby.players[*].user.equipped*Id to
+    // the synthetic IDs when a client-supplied override is in play, so
+    // the client can map players → configs via `availableItems` like
+    // before.
+    const { availableItems, equipOverrides } = await buildAvailableItemsAndOverrides(
+      updatedLobby?.players ?? [],
+    );
+    applyEquipOverridesToLobby(updatedLobby, equipOverrides);
     
     // Get selected table config (fallback to host's equipped table if not selected)
     let tableConfig = await lobby.getSelectedTableConfig(conn.lobbyId);
     if (!tableConfig) {
-      // Fallback: get host's equipped table config from connection cache
-      const host = conn.user;
-      if (host.equippedTableId) {
-        const tableResult = await query<{ config: Record<string, unknown> | string | null }>(
-          'SELECT config FROM item_catalog WHERE id = $1',
-          [host.equippedTableId]
-        );
-        if (tableResult.rows[0]?.config) {
-          const cfg = tableResult.rows[0].config;
-          tableConfig = typeof cfg === 'string' ? JSON.parse(cfg) : cfg;
+      // Prefer a client-supplied table override (Yandex Cloud Save) over
+      // the DB-equipped table.
+      const hostTableOverride = connections.getClientItemOverride(userId, 'table');
+      if (hostTableOverride && hostTableOverride.config) {
+        tableConfig = hostTableOverride.config;
+      } else {
+        // Fallback: get host's equipped table config from connection cache
+        const host = conn.user;
+        if (host.equippedTableId) {
+          const tableResult = await query<{ config: Record<string, unknown> | string | null }>(
+            'SELECT config FROM item_catalog WHERE id = $1',
+            [host.equippedTableId]
+          );
+          if (tableResult.rows[0]?.config) {
+            const cfg = tableResult.rows[0].config;
+            tableConfig = typeof cfg === 'string' ? JSON.parse(cfg) : cfg;
+          }
         }
       }
     }
@@ -1293,68 +1395,10 @@ async function startGameAfterBetting(lobbyId: string): Promise<void> {
   const minAspectRatio = lobby.getMinAspectRatio(lobbyId);
   const gameState = game.getGameState(lobbyId);
   
-  // Collect all equipped items from all players for client-side preloading
-  const availableItems: any[] = [];
-  const seenItemIds = new Set<number>();
-  
-  for (const player of lobbyData.players) {
-    // Add dice
-    if (player.user.equippedDiceId && !seenItemIds.has(player.user.equippedDiceId)) {
-      seenItemIds.add(player.user.equippedDiceId);
-      const diceResult = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
-        'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
-        [player.user.equippedDiceId]
-      );
-      if (diceResult.rows[0]) {
-        const row = diceResult.rows[0];
-        availableItems.push({
-          id: row.id,
-          type: row.type,
-          code: row.code,
-          name: row.name,
-          config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-        });
-      }
-    }
-    
-    // Add table
-    if (player.user.equippedTableId && !seenItemIds.has(player.user.equippedTableId)) {
-      seenItemIds.add(player.user.equippedTableId);
-      const tableResult = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
-        'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
-        [player.user.equippedTableId]
-      );
-      if (tableResult.rows[0]) {
-        const row = tableResult.rows[0];
-        availableItems.push({
-          id: row.id,
-          type: row.type,
-          code: row.code,
-          name: row.name,
-          config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-        });
-      }
-    }
-    
-    // Add effect
-    if (player.user.equippedEffectId && !seenItemIds.has(player.user.equippedEffectId)) {
-      seenItemIds.add(player.user.equippedEffectId);
-      const effectResult = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
-        'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
-        [player.user.equippedEffectId]
-      );
-      if (effectResult.rows[0]) {
-        const row = effectResult.rows[0];
-        availableItems.push({
-          id: row.id,
-          type: row.type,
-          code: row.code,
-          name: row.name,
-          config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-        });
-      }
-    }
-  }
+  // Collect all equipped items (DB-backed and client-supplied) for
+  // client-side preloading. See `buildAvailableItemsAndOverrides`.
+  const { availableItems, equipOverrides } = await buildAvailableItemsAndOverrides(lobbyData.players);
+  applyEquipOverridesToLobby(lobbyData, equipOverrides);
   
   // Build mode-specific data
   let modeData: Record<string, unknown> = {};
@@ -1517,13 +1561,17 @@ async function handleThrowStart(userId: number, throwPower: number, effectId: nu
   
   // Use cached user data from connection
   const user = conn.user;
-  
-  // Get dice config from cache (should be preloaded, so this is fast)
-  // If not in cache, load it (first time only)
-  let diceConfig = null;
-  if (user.equippedDiceId) {
+
+  // Prefer a client-supplied dice override (Yandex Cloud Save) over the
+  // server's DB-equipped dice. See `Connection.clientItems`.
+  const clientDice = connections.getClientItemOverride(userId, 'dice');
+  let diceConfig: Record<string, unknown> | null = null;
+  let equippedDiceIdForBroadcast: number | null | undefined = user.equippedDiceId;
+  if (clientDice && clientDice.config) {
+    diceConfig = clientDice.config;
+    equippedDiceIdForBroadcast = syntheticItemId(userId, 'dice');
+  } else if (user.equippedDiceId) {
     diceConfig = await lobby.getDiceConfig(user.equippedDiceId);
-    // Log if config is missing (should not happen if preloading works)
     if (!diceConfig) {
       logger.warn('Dice config not found for throw_start', { userId, diceId: user.equippedDiceId });
     }
@@ -1553,7 +1601,7 @@ async function handleThrowStart(userId: number, throwPower: number, effectId: nu
     playerNickname: user.nickname,
     throwPower,
     effectId,
-    equippedDiceId: user.equippedDiceId,
+    equippedDiceId: equippedDiceIdForBroadcast,
     diceConfig,
     selectedDice // Pass selected dice for Palmo's Dice rerolls
   }, userId);

@@ -355,6 +355,31 @@ const SaveCustomDiceSchema = z.object({
   }),
 });
 
+// Lets a client (currently only the Yandex Games build) push the dice /
+// table / effect configs it picked from its local Cloud Save to the
+// server, so the server can broadcast them to the *other* players in a
+// multiplayer match. Without this, the server only knows about the
+// equipped item IDs in the database (which never change on Yandex —
+// every Yandex user is stuck on `classic_white` — so opponents would
+// always see white dice regardless of what each player picked locally).
+//
+// `code` is a short identifier (e.g. `classic_red`, `yandex_custom`)
+// used purely for telemetry / debugging on the server side — the
+// authoritative payload is `config`. Each slot is optional so the
+// client can clear an override by sending `dice: null` etc.
+const PlayerItemSlotSchema = z.object({
+  code: z.string().min(1).max(64),
+  name: z.string().min(1).max(128),
+  config: z.record(z.unknown()).nullable(),
+}).nullable();
+
+const SetPlayerItemsSchema = z.object({
+  type: z.literal('set_player_items'),
+  dice: PlayerItemSlotSchema.optional(),
+  table: PlayerItemSlotSchema.optional(),
+  effect: PlayerItemSlotSchema.optional(),
+});
+
 // === Betting schemas ===
 
 const PlaceBetSchema = z.object({
@@ -448,6 +473,7 @@ const MessageSchemas = {
   get_boost_states: GetBoostStatesSchema,
   admin_gift: AdminGiftSchema,
   save_custom_dice: SaveCustomDiceSchema,
+  set_player_items: SetPlayerItemsSchema,
   place_bet: PlaceBetSchema,
   confirm_bet: ConfirmBetSchema,
   cancel_bet: CancelBetSchema,

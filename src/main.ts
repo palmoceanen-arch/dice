@@ -239,7 +239,6 @@ wsClient.on('auth_success', () => {
   
   // Sync pips from server (БД - источник истины)
   if (wsClient.user?.pips !== undefined) {
-    console.log('[PIPS] Syncing from server:', wsClient.user.pips);
     game.setPips(wsClient.user.pips); // Это обновит и localStorage
   }
 });
@@ -248,7 +247,6 @@ wsClient.on('auth_success', () => {
 wsClient.on('pips_updated', (data: any) => {
   // Server sends updates but client already updated via localStorage
   // This is just for background sync
-  console.log('[PIPS] Server confirmed:', data);
 });
 
 wsClient.on('item_equipped', (data: any) => {

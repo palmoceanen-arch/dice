@@ -112,6 +112,10 @@ class CloudSaveManager {
   // uses localStorage.customDiceConfig).
   private customDice: any | null = null;
   private customDiceListeners = new Set<() => void>();
+  // Notified whenever the equipped dice / table / custom dice changes —
+  // used by the live WebSocket client to push `set_player_items` to the
+  // server so multiplayer opponents see the player's actual local skin.
+  private inventoryListeners = new Set<() => void>();
 
   private dataFlushTimer: number | null = null;
   private statsFlushTimer: number | null = null;
@@ -234,6 +238,20 @@ class CloudSaveManager {
     this.customDiceListeners.forEach((cb) => {
       try { cb(); } catch (e) { console.warn('[cloud] custom-dice listener threw', e); }
     });
+    // Custom-dice changes also affect what config is served as the
+    // player's "equipped" dice, so fire the inventory listeners too.
+    this.notifyInventoryChange();
+  }
+
+  onInventoryChange(cb: () => void): () => void {
+    this.inventoryListeners.add(cb);
+    return () => this.inventoryListeners.delete(cb);
+  }
+
+  private notifyInventoryChange(): void {
+    this.inventoryListeners.forEach((cb) => {
+      try { cb(); } catch (e) { console.warn('[cloud] inventory listener threw', e); }
+    });
   }
 
   // --- equipped item helpers (mirrors the WebSocketClient API used by Game.ts) ---
@@ -308,6 +326,7 @@ class CloudSaveManager {
     this.inventory.equippedDiceId = id;
     saveToLocal(LS_INVENTORY_KEY, this.inventory);
     this.queueData();
+    this.notifyInventoryChange();
   }
 
   async equipTable(id: string): Promise<void> {
@@ -315,6 +334,7 @@ class CloudSaveManager {
     this.inventory.equippedTableId = id;
     saveToLocal(LS_INVENTORY_KEY, this.inventory);
     this.queueData();
+    this.notifyInventoryChange();
   }
 
   async purchaseDice(id: string, price: number): Promise<boolean> {

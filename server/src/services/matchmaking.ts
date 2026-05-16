@@ -34,6 +34,7 @@ import { query } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 import { metricsCollector } from '../utils/metrics.js';
 import { BettingManager } from './betting.js';
+import { buildAvailableItemsAndOverrides, applyEquipOverridesToLobby } from '../websocket/handlers.js';
 import type { GameMode } from '../types/index.js';
 
 export type QueueMode = 'duel' | 'any';
@@ -524,48 +525,13 @@ async function autoStartMatch(
     // `getPlayerDiceConfig` falls back to its own inventory and silently
     // misses configs for items it doesn't own — the symptom users see
     // is that opponents' custom dice render as the default white skin
-    // during their throws. We mirror the shape used by
-    // `handlers.handleStartGame` so matchmaking-started games look
-    // identical to manually-started ones on the client.
-    const availableItems: Array<{
-      id: number;
-      type: string;
-      code: string;
-      name: string;
-      config: Record<string, unknown> | null;
-    }> = [];
-    const seenItemIds = new Set<number>();
-    if (lobbyData) {
-      const equippedIds: number[] = [];
-      for (const p of lobbyData.players) {
-        if (p.user.equippedDiceId) equippedIds.push(p.user.equippedDiceId);
-        if (p.user.equippedTableId) equippedIds.push(p.user.equippedTableId);
-        if (p.user.equippedEffectId) equippedIds.push(p.user.equippedEffectId);
-      }
-      for (const itemId of equippedIds) {
-        if (seenItemIds.has(itemId)) continue;
-        seenItemIds.add(itemId);
-        const itemResult = await query<{
-          id: number;
-          type: string;
-          code: string;
-          name: string;
-          config: Record<string, unknown> | string | null;
-        }>(
-          'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
-          [itemId],
-        );
-        const row = itemResult.rows[0];
-        if (!row) continue;
-        availableItems.push({
-          id: row.id,
-          type: row.type,
-          code: row.code,
-          name: row.name,
-          config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-        });
-      }
-    }
+    // during their throws. We also fold in any client-supplied overrides
+    // (Yandex Cloud Save) so opponents render the skin the player picked
+    // locally, even though it isn't reflected in the server DB.
+    const { availableItems, equipOverrides } = await buildAvailableItemsAndOverrides(
+      lobbyData?.players ?? [],
+    );
+    applyEquipOverridesToLobby(lobbyData, equipOverrides);
 
     // Build mode-specific data, mirroring handlers.handleStartGame so
     // matchmaking-started games look identical to manually-started ones

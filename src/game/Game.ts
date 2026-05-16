@@ -1518,10 +1518,8 @@ export class Game {
       
       // Desktop click handler for dice selection (Palmo's Dice mode)
       this.canvas.addEventListener('click', (e) => {
-        console.log('[PALMOS] Desktop click event', { isDragging, clientX: e.clientX, clientY: e.clientY });
-        // Don't handle click if it was a drag operation
+          // Don't handle click if it was a drag operation
         if (isDragging) {
-          console.log('[PALMOS] Click ignored (was dragging)');
           isDragging = false;
           return;
         }
@@ -1827,35 +1825,24 @@ export class Game {
 
 
   private throwDice(_power: number = 0.5, deltaY: number = 5, deltaZ: number = -20) {
-    console.log('[Game] throwDice called', {
-      isMultiplayer: this.gameSync.isMultiplayerActive(),
-      isMyTurn: this.gameSync.isMyTurn(),
-      isReplaying: this.diceSync?.isCurrentlyReplaying(),
-      diceInHand: this.diceInHand,
-      isMenuOpen: this.isMenuOpen()
-    });
     
     // Check if menu is open - block throws
     if (this.isMenuOpen()) {
-      console.log('[Game] Menu is open, cannot throw');
       return;
     }
     
     // Check if multiplayer is active and if it's our turn
     if (this.gameSync.isMultiplayerActive() && !this.gameSync.isMyTurn()) {
-      console.log('[Game] Not your turn in multiplayer');
       return;
     }
     
     // Check if we're replaying another player's throw
     if (this.diceSync?.isCurrentlyReplaying()) {
-      console.log('[Game] Cannot throw while replaying');
       return;
     }
     
     // Check if dice are in hand
     if (!this.diceInHand) {
-      console.log('[Game] Dice not in hand, cannot throw');
       return;
     }
     
@@ -2172,10 +2159,6 @@ export class Game {
           return;
         }
         
-        console.log('[PIPS] Awarding pips', { 
-          finalEarnedPips, 
-          connectionHealth: wsClient.connectionHealth 
-        });
         
         const currentPips = this.wallText!.getPips();
         const newPips = currentPips + finalEarnedPips;
@@ -2213,11 +2196,9 @@ export class Game {
       
       // Enable dice selection for Palmo's Dice mode after roll
       const isMyTurn = this.gameSync.isMyTurn();
-      console.log('[PALMOS] After roll check:', { gameMode, isMyTurn, diceInHand: this.diceInHand });
       (window as any).debugLog?.('PALMOS', `After roll: mode=${gameMode}, myTurn=${isMyTurn}`);
       
       if (gameMode === 'poker_dice' && isMyTurn) {
-        console.log('[PALMOS] Enabling dice selection after roll');
         // Make all dice dynamic again (some might be static from reroll)
         this.dice.forEach(dice => {
           dice.body.type = CANNON.Body.DYNAMIC;
@@ -2228,7 +2209,6 @@ export class Game {
         
         // Unblock buttons - throw is complete, dice stay on table
         this.gameSync.setThrowInProgress(false);
-        console.log('[PALMOS] Throw completed, buttons unblocked');
         (window as any).debugLog?.('PALMOS', 'Throw completed, buttons unblocked');
       }
       
@@ -2314,11 +2294,6 @@ export class Game {
           // Log memory before clearing
           if ((performance as any).memory) {
             const mem = (performance as any).memory;
-            console.log('[Game] Memory when hiding:', {
-              used: Math.round(mem.usedJSHeapSize / 1048576) + 'MB',
-              total: Math.round(mem.totalJSHeapSize / 1048576) + 'MB',
-              limit: Math.round(mem.jsHeapSizeLimit / 1048576) + 'MB'
-            });
           }
         } catch (e) {
           console.warn('[Game] Error clearing renderer:', e);
@@ -2332,11 +2307,6 @@ export class Game {
         // Log memory after restore
         if ((performance as any).memory) {
           const mem = (performance as any).memory;
-          console.log('[Game] Memory when restoring:', {
-            used: Math.round(mem.usedJSHeapSize / 1048576) + 'MB',
-            total: Math.round(mem.totalJSHeapSize / 1048576) + 'MB',
-            limit: Math.round(mem.jsHeapSizeLimit / 1048576) + 'MB'
-          });
         }
         
         if (isLost) {
@@ -2545,15 +2515,12 @@ export class Game {
   
   // Called by GameSync when turn changes to us
   public onTurnChanged(isMyTurn: boolean) {
-    console.log('[Game] Turn changed, isMyTurn:', isMyTurn);
     if (isMyTurn) {
       // Stop any ongoing replay immediately when turn comes to us
       if (this.diceSync?.isCurrentlyReplaying()) {
-        console.log('[Game] Stopping replay - our turn now');
         this.diceSync.stopReplay();
       }
       
-      console.log('[Game] Resetting dice to hand for our turn');
       this.forceResetDiceToHand();
       
       // Show ready dialog if enabled and in motion mode during multiplayer
@@ -2634,7 +2601,6 @@ export class Game {
       }
     } else {
       // Solo mode - just set positions directly
-      console.log('[Game] Setting dice positions directly');
       this.dice.forEach((dice, i) => {
         dice.body.type = CANNON.Body.DYNAMIC;
         dice.body.wakeUp();
@@ -2701,7 +2667,6 @@ export class Game {
   
   // Set synced aspect ratio for multiplayer (use narrowest device)
   public setSyncedAspectRatio(aspectRatio: number) {
-    console.log('[Game] Setting synced aspect ratio:', aspectRatio);
     
     // Calculate wall position based on synced aspect ratio
     const fov = this.camera.fov * Math.PI / 180;
@@ -2718,7 +2683,6 @@ export class Game {
     if (this.leftWallMesh) this.leftWallMesh.position.x = -wallX;
     if (this.rightWallMesh) this.rightWallMesh.position.x = wallX;
     
-    console.log('[Game] Walls set to x:', wallX);
   }
   
   // Reset walls to local aspect ratio (when leaving multiplayer)
@@ -2738,7 +2702,6 @@ export class Game {
   
   // Called when multiplayer game starts - reset dice for all, only shooter gets dice in hand
   public onGameStarted(isMyTurn: boolean) {
-    console.log('[Game] Game started, isMyTurn:', isMyTurn);
     
     // Hide wall text in multiplayer
     if (this.wallText) {
@@ -2932,12 +2895,9 @@ export class Game {
     const currentConfigStr = JSON.stringify(this.tableConfig);
     const newConfigStr = JSON.stringify(newConfig);
     
-    console.log('[Game] updateTableAppearance - current:', currentConfigStr);
-    console.log('[Game] updateTableAppearance - new:', newConfigStr);
     
     // Skip if config is the same (avoid material recreation bugs)
     if (currentConfigStr === newConfigStr) {
-      console.log('[Game] Table config unchanged, skipping update');
       return;
     }
     
@@ -2947,7 +2907,6 @@ export class Game {
       this.clearNormalMapCache();
     }
     
-    console.log('[Game] Updating table appearance:', newConfig);
     this.tableConfig = newConfig;
     
     // Update scene background to match wall color (darker)
@@ -3267,23 +3226,14 @@ export class Game {
   // === Palmo's Dice: Dice Selection for Reroll ===
   
   private handleDiceClick(event: MouseEvent | Touch) {
-    console.log('[PALMOS] handleDiceClick called', {
-      enabled: this.diceSelectionEnabled,
-      inHand: this.diceInHand,
-      eventType: event instanceof MouseEvent ? 'mouse' : 'touch',
-      clientX: event.clientX,
-      clientY: event.clientY
-    });
     (window as any).debugLog?.('PALMOS', `handleDiceClick: enabled=${this.diceSelectionEnabled}, inHand=${this.diceInHand}`);
     
     // Only allow selection in Palmo's Dice mode when selection is enabled
     if (!this.diceSelectionEnabled) {
-      console.log('[PALMOS] Selection not enabled, ignoring click');
       (window as any).debugLog?.('PALMOS', 'Selection not enabled, ignoring click');
       return;
     }
     if (this.diceInHand) {
-      console.log('[PALMOS] Dice in hand, ignoring click');
       (window as any).debugLog?.('PALMOS', 'Dice in hand, ignoring click');
       return; // Can't select dice in hand
     }
@@ -3293,7 +3243,6 @@ export class Game {
     this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     
-    console.log('[PALMOS] Mouse normalized:', this.mouse.x.toFixed(2), this.mouse.y.toFixed(2));
     (window as any).debugLog?.('PALMOS', `Mouse pos: ${this.mouse.x.toFixed(2)}, ${this.mouse.y.toFixed(2)}`);
     
     // Update raycaster
@@ -3303,7 +3252,6 @@ export class Game {
     const diceMeshes = this.dice.map(d => d.mesh);
     const intersects = this.raycaster.intersectObjects(diceMeshes);
     
-    console.log('[PALMOS] Raycaster intersects:', intersects.length);
     (window as any).debugLog?.('PALMOS', `Intersects: ${intersects.length}`);
     
     if (intersects.length > 0) {
@@ -3311,7 +3259,6 @@ export class Game {
       const clickedMesh = intersects[0].object;
       const diceIndex = this.dice.findIndex(d => d.mesh === clickedMesh);
       
-      console.log('[PALMOS] Clicked dice index:', diceIndex);
       (window as any).debugLog?.('PALMOS', `Clicked dice index: ${diceIndex}`);
       
       if (diceIndex !== -1) {
@@ -3375,13 +3322,11 @@ export class Game {
   }
   
   public enableDiceSelection() {
-    console.log('[PALMOS] enableDiceSelection called');
     this.diceSelectionEnabled = true;
     (window as any).debugLog?.('PALMOS', 'Selection enabled');
   }
   
   public disableDiceSelection() {
-    console.log('[PALMOS] disableDiceSelection called');
     this.diceSelectionEnabled = false;
     // Clear all selections
     this.clearDiceSelection();

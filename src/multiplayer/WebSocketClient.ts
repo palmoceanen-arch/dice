@@ -310,7 +310,6 @@ export class WebSocketClient {
       
       // Skip logging for high-frequency messages
       if (message.type !== 'throw_frame' && message.type !== 'throw_sound') {
-        console.log('[WS] Received:', message.type);
       }
       
       // Handle server shutdown notification
@@ -328,7 +327,6 @@ export class WebSocketClient {
       
       // Handle connection health updates
       if (message.type === 'connection_health') {
-        console.log('[WS] Connection health:', message.health);
         this.connectionHealth = message.health;
         this.emit('connection_health_changed', { 
           health: message.health,
@@ -338,17 +336,14 @@ export class WebSocketClient {
       
       // Handle friend connection status
       if (message.type === 'friend_connection_status') {
-        console.log('[WS] Friend connection status:', message.friendId, message.connectionHealth);
       }
       
       // Handle player connection status in lobby
       if (message.type === 'player_connection_status') {
-        console.log('[WS] Player connection status:', message.userId, message.connectionHealth);
       }
       
       // Debug dice_throw_sync
       if (message.type === 'dice_throw_sync') {
-        console.log('[WS] dice_throw_sync full message:', message);
       }
       
       // Handle auth success
@@ -360,7 +355,6 @@ export class WebSocketClient {
         
         // Check if we can reconnect to a game
         if (message.canReconnect) {
-          console.log('[WS] Can reconnect to game:', message.canReconnect.lobbyId, 'time left:', message.canReconnect.timeLeft);
           this.pendingReconnect = message.canReconnect;
         }
       }
