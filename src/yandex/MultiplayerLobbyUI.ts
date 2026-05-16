@@ -178,6 +178,90 @@ function ensureStyles(): void {
     .ymp-mode-card .name { font-weight: 700; font-size: 14px; }
     .ymp-mode-card .sub  { font-size: 12px; opacity: 0.7; margin-top: 2px; }
 
+    /* Compact 2-column game-mode grid for Quick play. Just the mode
+       name plus an info button — rules live behind the (i) tap. */
+    .ymp-game-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    }
+    .ymp-game-card {
+      position: relative;
+      padding: 10px 32px 10px 12px; border-radius: 10px;
+      background: rgba(255,255,255,0.06); cursor: pointer;
+      transition: background 0.15s, outline 0.15s;
+      outline: 1px solid transparent;
+      min-height: 40px;
+      display: flex; align-items: center;
+    }
+    .ymp-game-card:hover { background: rgba(255,255,255,0.12); }
+    .ymp-game-card.active {
+      background: rgba(255,216,77,0.18);
+      outline: 1px solid rgba(255,216,77,0.55);
+    }
+    .ymp-game-card .name { font-weight: 700; font-size: 13px; }
+    .ymp-game-card.active .name { color: #ffd84d; }
+    .ymp-info-btn {
+      position: absolute; top: 50%; right: 4px;
+      transform: translateY(-50%);
+      width: 24px; height: 24px; border-radius: 50%;
+      border: 0; background: rgba(255,255,255,0.10); color: #fff;
+      font-family: 'Georgia', 'Times New Roman', serif;
+      font-style: italic; font-weight: 700; font-size: 13px;
+      cursor: pointer; display: inline-flex;
+      align-items: center; justify-content: center;
+      transition: background 0.15s, color 0.15s;
+      line-height: 1; padding: 0;
+    }
+    .ymp-info-btn:hover { background: rgba(255,216,77,0.25); color: #ffd84d; }
+
+    /* Rules modal (stacked on top of the lobby panel). */
+    .ymp-rules-overlay {
+      position: fixed; inset: 0; z-index: 160;
+      background: rgba(0,0,0,0.72);
+      display: flex; align-items: center; justify-content: center;
+      font-family: 'Montserrat', system-ui, sans-serif;
+    }
+    .ymp-rules-dialog {
+      width: min(420px, 92%); max-height: 80vh;
+      padding: 20px; box-sizing: border-box;
+      border-radius: 14px;
+      background: linear-gradient(180deg, #20202a 0%, #0f0f14 100%);
+      box-shadow: 0 12px 36px rgba(0,0,0,0.6);
+      display: flex; flex-direction: column; gap: 12px;
+      color: #fff;
+    }
+    .ymp-rules-body {
+      overflow-y: auto;
+      font-size: 13px; line-height: 1.5;
+      color: rgba(255,255,255,0.86);
+    }
+    .ymp-rules-body h1 {
+      font-size: 18px; font-weight: 700; margin: 0 0 8px;
+      text-align: center; color: #ffd84d;
+    }
+    .ymp-rules-body h2 {
+      font-size: 14px; font-weight: 700; margin: 12px 0 4px;
+      color: #fff;
+    }
+    .ymp-rules-body h3 {
+      font-size: 13px; font-weight: 700; margin: 8px 0 2px;
+      color: rgba(255,255,255,0.9);
+    }
+    .ymp-rules-body strong { color: #ffd84d; font-weight: 700; }
+    .ymp-rules-body ul, .ymp-rules-body ol {
+      margin: 4px 0 6px; padding-left: 22px;
+    }
+    .ymp-rules-body li { margin-bottom: 2px; }
+    .ymp-rules-body p { margin: 4px 0; }
+    .ymp-rules-body table {
+      border-collapse: collapse; width: 100%;
+      margin: 6px 0; font-size: 12px;
+    }
+    .ymp-rules-body th, .ymp-rules-body td {
+      border: 1px solid rgba(255,255,255,0.12);
+      padding: 4px 6px; text-align: left;
+    }
+    .ymp-rules-body th { background: rgba(255,255,255,0.06); }
+
     .ymp-code-input {
       flex: 1; padding: 12px 14px; border-radius: 10px; border: 0;
       background: rgba(255,255,255,0.08); color: #fff;
@@ -778,17 +862,21 @@ export class MultiplayerLobbyUI {
     const reasonText = (() => {
       switch (reasonCode) {
         case 'disconnected':
-          return l('A player lost connection. Match cancelled, your bet was refunded.',
-                   'Игрок потерял связь. Матч отменён, ставка возвращена.');
+          return t('multiplayer.matchCancelledDisconnect') ||
+            l('A player lost connection. Match cancelled, your bet was refunded.',
+              'Игрок потерял связь. Матч отменён, ставка возвращена.');
         case 'not_ready':
-          return l('Someone didn\u2019t confirm in time. Match cancelled, your bet was refunded.',
-                   'Кто-то не подтвердил готовность. Матч отменён, ставка возвращена.');
+          return t('multiplayer.matchCancelledNotReady') ||
+            l('Someone didn’t confirm in time. Match cancelled, your bet was refunded.',
+              'Кто-то не подтвердил готовность. Матч отменён, ставка возвращена.');
         case 'declined':
-          return l('A player declined. Match cancelled, your bet was refunded.',
-                   'Игрок отказался. Матч отменён, ставка возвращена.');
+          return t('multiplayer.matchCancelledDeclined') ||
+            l('A player declined. Match cancelled, your bet was refunded.',
+              'Игрок отказался. Матч отменён, ставка возвращена.');
         default:
-          return l('Match cancelled. Your bet was refunded.',
-                   'Матч отменён. Ставка возвращена.');
+          return t('multiplayer.matchCancelled') ||
+            l('Match cancelled. Your bet was refunded.',
+              'Матч отменён. Ставка возвращена.');
       }
     })();
     this.pendingMatch = null;
@@ -848,10 +936,11 @@ export class MultiplayerLobbyUI {
     // manually. Surface that loud and clear and drop any in-flight
     // search state — the server will have GC'd us out of the queue by
     // now anyway.
-    const text = l(
-      'Connection lost. Please reload to retry.',
-      'Соединение потеряно. Перезагрузите страницу.',
-    );
+    const text = t('multiplayer.connectionLost') ||
+      l(
+        'Connection lost. Please reload to retry.',
+        'Соединение потеряно. Перезагрузите страницу.',
+      );
     this.connectionHealth = 'offline';
     if (this.isSearching || this.pendingMatch) {
       this.cancellationMessage = text;
@@ -1232,7 +1321,7 @@ export class MultiplayerLobbyUI {
         <span class="dot"></span>
         <span class="label" data-act="banner-open">${escapeHtml(readyLine)}</span>
         <span class="meta" data-act="banner-open">${escapeHtml(meta)}</span>
-        <button class="cancel" data-act="banner-open">${escapeHtml(l('Open', 'Открыть'))}</button>
+        <button class="cancel" data-act="banner-open">${escapeHtml(t('multiplayer.open') || l('Open', 'Открыть'))}</button>
       `;
     } else if (this.isSearching) {
       const baseLabel = offline
@@ -1414,21 +1503,24 @@ export class MultiplayerLobbyUI {
 
     // Game-mode picker — same modes as Create. "Quick play" was missing
     // this picker before, so everyone got dropped into the default
-    // (poker_dice) regardless of intent.
+    // (poker_dice) regardless of intent. Compact 2-column grid, name
+    // only; rules live behind the (i) info button so the whole picker
+    // fits on screen without scrolling.
     const gameModes: GameMode[] = ['poker_dice', 'mexico', 'greedy_pig', 'street_craps'];
     const gameModeCards = gameModes
-      .map(
-        (m) => `
-          <div class="ymp-mode-card ${this.selectedQuickGameMode === m ? 'active' : ''}"
+      .map((m) => {
+        const active = this.selectedQuickGameMode === m;
+        return `
+          <div class="ymp-game-card ${active ? 'active' : ''}"
                data-act="pick-quick-game-mode" data-mode="${m}"
-               role="button" tabindex="0" aria-pressed="${this.selectedQuickGameMode === m}">
-            <div>
-              <div class="name">${escapeHtml(MODE_LABELS[m].name)}</div>
-              <div class="sub">${escapeHtml(MODE_LABELS[m].sub)}</div>
-            </div>
+               role="button" tabindex="0" aria-pressed="${active}">
+            <div class="name">${escapeHtml(MODE_LABELS[m].name)}</div>
+            <button type="button" class="ymp-info-btn"
+                    data-act="show-game-rules" data-mode="${m}"
+                    aria-label="${escapeHtml(t('multiplayer.rulesTitle') || l('Rules', 'Правила'))}">i</button>
           </div>
-        `,
-      )
+        `;
+      })
       .join('');
 
     const canPlay =
@@ -1442,10 +1534,10 @@ export class MultiplayerLobbyUI {
       ${this.statusHtml()}
       <div class="ymp-section">
         <div class="ymp-section-title">${escapeHtml(t('multiplayer.selectGameMode') || l('Pick a game', 'Выберите игру'))}</div>
-        <div class="ymp-row col">${gameModeCards}</div>
+        <div class="ymp-game-grid">${gameModeCards}</div>
       </div>
       <div class="ymp-section">
-        <div class="ymp-section-title">${escapeHtml(t('multiplayer.selectMode') || 'Pick a mode')}</div>
+        <div class="ymp-section-title">${escapeHtml(t('multiplayer.selectMode') || l('Pick a format', 'Выберите формат'))}</div>
         <div class="ymp-row col">${queueModeCards}</div>
       </div>
       <div class="ymp-section">
@@ -1477,9 +1569,11 @@ export class MultiplayerLobbyUI {
     const offline = this.connectionHealth === 'offline';
     const unstable = this.connectionHealth === 'unstable';
     const searchingText = offline
-      ? l('Reconnecting…', 'Подключение…')
+      ? (t('multiplayer.reconnecting') ||
+          l('Reconnecting…', 'Подключение…'))
       : unstable
-        ? l('Unstable connection — still searching…', 'Нестабильно — продолжаем поиск…')
+        ? (t('multiplayer.unstableSearching') ||
+            l('Unstable connection — still searching…', 'Нестабильно — продолжаем поиск…'))
         : this.selectedQueueMode === 'any'
           ? (t('multiplayer.searchingAny') || 'Searching for {min}–{max} players…')
               .replace('{min}', '3')
@@ -1488,10 +1582,11 @@ export class MultiplayerLobbyUI {
     const betLine = this.selectedBet === 0
       ? escapeHtml(t('multiplayer.noBet') || 'No bet')
       : `${escapeHtml(t('multiplayer.betAmount') || 'Bet')}: <b>${escapeHtml(fmt.amount)}</b>`;
-    const minimizeHint = l(
-      'You can close this and keep rolling — we\u2019ll ping you when a match is found.',
-      'Можете закрыть окно и бросать кубики — позовём, когда найдём соперника.',
-    );
+    const minimizeHint = t('multiplayer.minimizeHint') ||
+      l(
+        'You can close this and keep rolling — we’ll ping you when a match is found.',
+        'Можете закрыть окно и бросать кубики — позовём, когда найдём соперника.',
+      );
     this.panel.innerHTML = `
       ${this.headerHtml(t('multiplayer.quickPlay') || 'Quick play', false)}
       ${this.statusHtml()}
@@ -1505,7 +1600,7 @@ export class MultiplayerLobbyUI {
       </div>
       <div class="ymp-row">
         <button class="ymp-btn ghost" data-act="close" style="flex:1">
-          ${escapeHtml(l('Keep playing', 'Продолжить игру'))}
+          ${escapeHtml(t('multiplayer.keepPlaying') || l('Keep playing', 'Продолжить игру'))}
         </button>
         <button class="ymp-btn danger" data-act="cancel-search" style="flex:1">
           ${escapeHtml(t('multiplayer.cancelSearch') || 'Cancel search')}
@@ -1530,21 +1625,21 @@ export class MultiplayerLobbyUI {
     const fmt = formatBet(pending.betAmount);
     const betLine = pending.betAmount === 0
       ? escapeHtml(t('multiplayer.noBet') || l('No bet', 'Без ставки'))
-      : `${escapeHtml(t('multiplayer.betAmount') || 'Bet')}: <b>${escapeHtml(fmt.amount)}</b> · ${escapeHtml(l('Pot', 'Банк'))}: <b>${pending.pot}</b>`;
+      : `${escapeHtml(t('multiplayer.betAmount') || 'Bet')}: <b>${escapeHtml(fmt.amount)}</b> · ${escapeHtml(t('multiplayer.pot') || l('Pot', 'Банк'))}: <b>${pending.pot}</b>`;
     const readyLabel = pending.iAmReady
-      ? l('Waiting for others…', 'Ждём других…')
-      : l('Ready', 'Я готов');
+      ? (t('multiplayer.waitingForOthers') || l('Waiting for others…', 'Ждём других…'))
+      : (t('multiplayer.iAmReady') || l('Ready', 'Я готов'));
     this.panel.innerHTML = `
       ${this.headerHtml(t('multiplayer.matchFound') || l('Match found!', 'Соперник найден!'), false)}
       <div class="ymp-ready-headline">${escapeHtml(modeName)}</div>
       <div class="ymp-ready-sub">${betLine}</div>
       <div class="ymp-ready-countdown">${secLeft}s</div>
       <div class="ymp-ready-progress">
-        ${escapeHtml(l('Ready', 'Готовы'))}: <b>${pending.readyCount}</b> / ${pending.totalCount}
+        ${escapeHtml(t('multiplayer.readyCounter') || l('Ready', 'Готовы'))}: <b>${pending.readyCount}</b> / ${pending.totalCount}
       </div>
       <div class="ymp-row">
         <button class="ymp-btn ghost" data-act="decline-match" style="flex:1">
-          ${escapeHtml(l('Decline', 'Отказаться'))}
+          ${escapeHtml(t('multiplayer.decline') || l('Decline', 'Отказаться'))}
         </button>
         <button class="ymp-btn primary" data-act="confirm-ready" style="flex:2" ${pending.iAmReady ? 'disabled' : ''}>
           ${escapeHtml(readyLabel)}
@@ -1728,8 +1823,134 @@ export class MultiplayerLobbyUI {
   private bindActionButtons(): void {
     this.panel.querySelectorAll<HTMLElement>('[data-act]').forEach((el) => {
       const act = el.dataset.act!;
-      el.addEventListener('click', () => this.dispatchAction(act, el));
+      el.addEventListener('click', (ev) => {
+        // Info buttons live inside the card, but only the (i) tap
+        // should open the rules — don't double-fire the card click.
+        ev.stopPropagation();
+        this.dispatchAction(act, el);
+      });
     });
+  }
+
+  // Rules popover. The same `gameModes.*Rules` markdown blobs are used
+  // by the Telegram UI; we render a tiny markdown subset (h1-h3,
+  // **bold**, `-` lists, `|` tables) to keep the Yandex bundle small.
+  private showGameRulesModal(gameMode: GameMode): void {
+    const rulesKeyMap: Record<GameMode, string> = {
+      poker_dice: 'gameModes.pokerDiceRules',
+      street_craps: 'gameModes.streetCrapsRules',
+      mexico: 'gameModes.mexicoRules',
+      greedy_pig: 'gameModes.greedyPigRules',
+    };
+    const rulesText = t(rulesKeyMap[gameMode]) || '';
+    const modeName = MODE_LABELS[gameMode]?.name ?? gameMode;
+    const closeLabel = t('multiplayer.close') || l('Close', 'Закрыть');
+
+    const overlay = document.createElement('div');
+    overlay.className = 'ymp-rules-overlay';
+    overlay.innerHTML = `
+      <div class="ymp-rules-dialog" role="dialog" aria-label="${escapeHtml(modeName)}">
+        <div class="ymp-rules-body">${this.renderMarkdown(rulesText, modeName)}</div>
+        <button type="button" class="ymp-btn primary" data-act="close-rules">
+          ${escapeHtml(closeLabel)}
+        </button>
+      </div>
+    `;
+    const dismiss = () => {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    };
+    overlay.addEventListener('click', (ev) => {
+      if (ev.target === overlay) dismiss();
+    });
+    overlay
+      .querySelector<HTMLElement>('[data-act="close-rules"]')
+      ?.addEventListener('click', dismiss);
+    document.body.appendChild(overlay);
+  }
+
+  private renderMarkdown(text: string, fallbackTitle: string): string {
+    if (!text) {
+      return `<h1>${escapeHtml(fallbackTitle)}</h1>`;
+    }
+    // Order matters: tables first (line-based), then headings, then
+    // emphasis, then lists, then paragraphs.
+    const lines = text.split('\n');
+    const out: string[] = [];
+    let inUl = false;
+    let inOl = false;
+    let pendingTable: string[] = [];
+    const closeLists = () => {
+      if (inUl) { out.push('</ul>'); inUl = false; }
+      if (inOl) { out.push('</ol>'); inOl = false; }
+    };
+    const flushTable = () => {
+      if (pendingTable.length === 0) return;
+      const rows = pendingTable;
+      pendingTable = [];
+      if (rows.length < 2) {
+        rows.forEach((r) => out.push(`<p>${escapeHtml(r)}</p>`));
+        return;
+      }
+      const headerCells = rows[0].split('|').slice(1, -1).map((c) => c.trim());
+      const bodyRows = rows.slice(2);
+      out.push('<table>');
+      out.push('<thead><tr>');
+      headerCells.forEach((c) => out.push(`<th>${this.inlineMd(c)}</th>`));
+      out.push('</tr></thead>');
+      out.push('<tbody>');
+      bodyRows.forEach((r) => {
+        const cells = r.split('|').slice(1, -1).map((c) => c.trim());
+        out.push('<tr>');
+        cells.forEach((c) => out.push(`<td>${this.inlineMd(c)}</td>`));
+        out.push('</tr>');
+      });
+      out.push('</tbody></table>');
+    };
+    for (const raw of lines) {
+      const line = raw.trimEnd();
+      if (/^\|.*\|$/.test(line)) {
+        pendingTable.push(line);
+        continue;
+      }
+      flushTable();
+      if (line === '') {
+        closeLists();
+        continue;
+      }
+      const h1 = line.match(/^# (.+)$/);
+      if (h1) { closeLists(); out.push(`<h1>${this.inlineMd(h1[1])}</h1>`); continue; }
+      const h2 = line.match(/^## (.+)$/);
+      if (h2) { closeLists(); out.push(`<h2>${this.inlineMd(h2[1])}</h2>`); continue; }
+      const h3 = line.match(/^### (.+)$/);
+      if (h3) { closeLists(); out.push(`<h3>${this.inlineMd(h3[1])}</h3>`); continue; }
+      const ol = line.match(/^\d+\.\s+(.+)$/);
+      if (ol) {
+        if (inUl) { out.push('</ul>'); inUl = false; }
+        if (!inOl) { out.push('<ol>'); inOl = true; }
+        out.push(`<li>${this.inlineMd(ol[1])}</li>`);
+        continue;
+      }
+      const ul = line.match(/^[-*]\s+(.+)$/);
+      if (ul) {
+        if (inOl) { out.push('</ol>'); inOl = false; }
+        if (!inUl) { out.push('<ul>'); inUl = true; }
+        out.push(`<li>${this.inlineMd(ul[1])}</li>`);
+        continue;
+      }
+      closeLists();
+      out.push(`<p>${this.inlineMd(line)}</p>`);
+    }
+    flushTable();
+    closeLists();
+    return out.join('');
+  }
+
+  private inlineMd(text: string): string {
+    // Escape first, then re-introduce markup. Bold (`**x**`) only —
+    // mode rules don't use italic or inline code in the catalog.
+    let html = escapeHtml(text);
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    return html;
   }
 
   private dispatchAction(act: string, el?: HTMLElement): void {
@@ -1776,6 +1997,13 @@ export class MultiplayerLobbyUI {
           this.selectedQuickGameMode = m;
           this.errorText = null;
           this.render();
+        }
+        break;
+      }
+      case 'show-game-rules': {
+        const m = el?.dataset.mode as GameMode | undefined;
+        if (m && (MODE_LABELS as Record<string, unknown>)[m]) {
+          this.showGameRulesModal(m);
         }
         break;
       }
