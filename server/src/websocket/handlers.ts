@@ -704,36 +704,59 @@ async function handleLeaveLobby(userId: number): Promise<void> {
   
   const lobbyId = conn.lobbyId;
   
-  // Get pending invitation users before leaving (to notify them if lobby closes)
-  const pendingInviteUsers = await lobby.getPendingInvitationUsers(lobbyId);
-  
-  await lobby.leaveLobby(lobbyId, userId);
-  
   // Get updated pips balance
   const newPips = await getUserPips(userId);
   
-  connections.send(userId, { 
-    type: 'lobby_left',
-    newPips 
-  });
-  
-  // Check if lobby was closed (no players left)
-  const lobbyData = await lobby.getLobby(lobbyId);
-  if (!lobbyData || lobbyData.status === 'finished') {
-    // Notify all users with pending invitations that the lobby was closed
-    for (const invitedUserId of pendingInviteUsers) {
-      connections.send(invitedUserId, {
-        type: 'invitation_cancelled',
-        lobbyId,
-      });
+  if (conn.inGame) {
+    // During active game: mark as disconnected (allow reconnect within 30s)
+    lobby.markPlayerDisconnected(lobbyId, userId);
+    
+    // Clear connection state so the player's UI resets
+    conn.lobbyId = null;
+    conn.inGame = false;
+    
+    // Send lobby_left to the leaving player (UI resets to solo mode)
+    connections.send(userId, { 
+      type: 'lobby_left',
+      newPips 
+    });
+    
+    // Notify other players about disconnect (they will see reconnect countdown)
+    broadcastToLobby(lobbyId, {
+      type: 'player_disconnected',
+      oderId: userId,
+      reconnectTimeoutMs: 30000
+    }, userId);
+  } else {
+    // Not in game (voting/waiting): permanent leave
+    // Get pending invitation users before leaving (to notify them if lobby closes)
+    const pendingInviteUsers = await lobby.getPendingInvitationUsers(lobbyId);
+    
+    await lobby.leaveLobby(lobbyId, userId);
+    
+    connections.send(userId, { 
+      type: 'lobby_left',
+      newPips 
+    });
+    
+    // Check if lobby was closed (no players left)
+    const lobbyData = await lobby.getLobby(lobbyId);
+    if (!lobbyData || lobbyData.status === 'finished') {
+      // Notify all users with pending invitations that the lobby was closed
+      for (const invitedUserId of pendingInviteUsers) {
+        connections.send(invitedUserId, {
+          type: 'invitation_cancelled',
+          lobbyId,
+        });
+      }
     }
+    
+    // Notify other players
+    broadcastToLobby(lobbyId, {
+      type: 'player_left',
+      oderId: userId,
+    }, userId);
   }
-  
-  // Notify other players
-  broadcastToLobby(lobbyId, {
-    type: 'player_left',
-    oderId: userId,
-  }, userId);
   
   // Notify friends that user is back online (not in lobby anymore)
   notifyFriendsStatusChanged(userId, 'online');
@@ -1116,8 +1139,31 @@ async function handleRestartGame(userId: number): Promise<void> {
   }
   
   const lobbyData = await lobby.getLobby(conn.lobbyId);
-  if (!lobbyData || lobbyData.hostId !== userId) {
-    connections.send(userId, { type: 'error', message: 'Only host can restart the game' });
+  if (!lobbyData) {
+    connections.send(userId, { type: 'error', message: 'Lobby not found' });
+    return;
+  }
+  
+  // Any player in the lobby can request a rematch — not just the host. This
+  // mirrors what the client now exposes (Rematch button visible for everyone)
+  // and prevents the second player being stuck on an Exit-only screen.
+  const isInLobby = lobbyData.players.some((p: { user: { id: number } }) => p.user.id === userId);
+  if (!isInLobby) {
+    connections.send(userId, { type: 'error', message: 'You are not in this lobby' });
+    return;
+  }
+  
+  // Idempotency: if betting is already initialized for this lobby (because
+  // another player already pressed Rematch), just re-send the betting UI to
+  // the requester rather than re-initializing and wiping existing bets.
+  if (BettingManager.isActive(conn.lobbyId)) {
+    const balance = await getUserPips(userId);
+    const state = BettingManager.getState(conn.lobbyId);
+    connections.send(userId, {
+      type: 'show_betting_ui',
+      minBet: state?.minBet ?? 10,
+      balance,
+    });
     return;
   }
   
