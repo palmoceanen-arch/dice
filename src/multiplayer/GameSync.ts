@@ -504,10 +504,24 @@ export class GameSync {
       this.game.clearDiceSelection();
       
       const diceSync = this.game.getDiceSync();
-      
-      // Try to get preloaded config first, fallback to data.diceConfig
-      const diceConfig = this.getPlayerDiceConfig(data.playerId) || data.diceConfig || null;
-      
+
+      // The server's `throw_start.diceConfig` is the authoritative current
+      // config — it reflects `set_player_items` overrides (Yandex Cloud
+      // Save) and any DB equip changes that happened after `game_started`
+      // was broadcast. The cache we built from `game_started.availableItems`
+      // can be stale (e.g. the Yandex client raced to ship
+      // `set_player_items` after the host pressed Start, so opponents got a
+      // DB-default item in `availableItems` instead of the player's actual
+      // skin). Falling back to the stale cache here used to short-circuit
+      // the fresh payload via `||`, freezing opponents on the default
+      // colours for the whole game. Prefer the server payload and refresh
+      // the cache so subsequent `teleportDiceToHand` / Mexico re-renders
+      // pick up the correct skin too.
+      const diceConfig = data.diceConfig || this.getPlayerDiceConfig(data.playerId) || null;
+      if (data.diceConfig) {
+        this.gameState.playerDiceConfigs.set(data.playerId, data.diceConfig);
+      }
+
       if (!diceConfig) {
         console.error('[GameSync] CRITICAL: No config for player', data.playerId, 'in throw_start!');
       }
