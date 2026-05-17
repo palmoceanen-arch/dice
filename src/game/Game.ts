@@ -1424,20 +1424,27 @@ export class Game {
 
 
   private setupControls() {
-    // Touch to init audio (required by browsers)
-    let audioInitialized = false;
+    // Audio MUST be unlocked from inside a real user gesture (touch/click)
+    // on iOS / Yandex's iOS WebView. We don't use `{ once: true }` here
+    // because the first attempt can fail (flaky mobile network during the
+    // sounds fetch, ad iframe stealing the gesture, etc.) and we want
+    // subsequent gestures to retry — AudioManager.init() is idempotent
+    // and short-circuits once the buffers are loaded.
     const initAudioOnce = async () => {
-      if (audioInitialized) return;
-      audioInitialized = true;
+      // Call directly so the synchronous unlock half of init() runs inside
+      // the current task — `await` would push it past the gesture token.
       await this.audio.init();
     };
-    
-    // Init audio on ANY touch/click
-    const initHandler = async () => {
-      await initAudioOnce();
+
+    const initHandler = () => {
+      // Fire-and-forget; we don't want to block the gesture path.
+      void initAudioOnce();
     };
-    document.addEventListener('touchstart', initHandler, { once: true, passive: true });
-    document.addEventListener('click', initHandler, { once: true });
+    document.addEventListener('touchstart', initHandler, { passive: true });
+    document.addEventListener('touchend', initHandler, { passive: true });
+    document.addEventListener('click', initHandler);
+    document.addEventListener('pointerdown', initHandler, { passive: true });
+    document.addEventListener('keydown', initHandler);
     
     // Desktop controls - hold and drag to shake, swipe up to throw
     if (!this.shakeDetector.isMobile) {
