@@ -21,6 +21,7 @@ import { loadYandexAuth } from './yandex/yandexAuth';
 import { BoostsModal } from './ui/BoostsModal';
 import { ReactionWheel } from './ui/ReactionWheel';
 import { MultiplayerReconnectDialog } from './yandex/MultiplayerReconnectDialog';
+import { MultiplayerLobbyGuard } from './yandex/MultiplayerLobbyGuard';
 // Bring the multiplayer stub onto window — Game.ts and a few other modules
 // look up `(window as any).wsClient` directly, so the stub must be reachable
 // the same way the real client is in the Telegram build.
@@ -72,6 +73,16 @@ const reactionWheel = new ReactionWheel();
 const multiplayerReconnect = new MultiplayerReconnectDialog();
 multiplayerReconnect.mount();
 (window as any).multiplayerReconnect = multiplayerReconnect;
+
+// Prevent the host from being left alone in a multiplayer lobby after a
+// game ends: if any opponent leaves while a match is active (in-game or
+// in the post-game result modal), drop the host too. Mirrors the
+// `player_left` handler the Telegram MultiplayerUI already runs at
+// src/ui/MultiplayerUI.ts:833. Without this the host can press
+// "New Game" while alone and play with themselves.
+const multiplayerLobbyGuard = new MultiplayerLobbyGuard();
+multiplayerLobbyGuard.mount();
+(window as any).multiplayerLobbyGuard = multiplayerLobbyGuard;
 
 // Sync the boost icon's visibility with the current game mode (the Yandex
 // GameSync stub always reports "not in multiplayer", so on the idle screen

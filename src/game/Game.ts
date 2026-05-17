@@ -2619,6 +2619,13 @@ export class Game {
   public getDiceSync() {
     return this.diceSync;
   }
+
+  // Public method to get game sync instance. Used by the Yandex
+  // `MultiplayerLobbyGuard` to read `isMultiplayerActive()` from a
+  // `player_left` event handler that lives outside the Game class.
+  public getGameSync() {
+    return this.gameSync;
+  }
   
   // Public method to check if dice are in hand
   public isDiceInHand(): boolean {
