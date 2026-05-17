@@ -28,6 +28,24 @@ declare global {
         stop(): void;
       };
     };
+    adv: {
+      showFullscreenAdv(options?: {
+        callbacks?: {
+          onOpen?: () => void;
+          onClose?: (wasShown: boolean) => void;
+          onError?: (error: unknown) => void;
+          onOffline?: () => void;
+        };
+      }): void;
+      showRewardedVideo(options?: {
+        callbacks?: {
+          onOpen?: () => void;
+          onRewarded?: () => void;
+          onClose?: () => void;
+          onError?: (error: unknown) => void;
+        };
+      }): void;
+    };
     dispatchEvent(name: string, payload?: unknown): Promise<void>;
     EVENTS: {
       EXIT: string;

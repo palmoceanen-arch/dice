@@ -24,7 +24,60 @@
 import { cloudSave } from '../cloudSave';
 import { WebSocketClient } from '../../multiplayer/WebSocketClient';
 import { getYandexAuth } from '../yandexAuth';
+import { showRewardedVideo } from '../platform';
 import presets from '../../../shared/presets.json';
+
+// Yandex-tuned boost cooldowns. Players unlock a boost by watching a
+// rewarded video ad; cooldowns are short enough that an engaged player
+// keeps watching ads (good ARPU) but long enough that boosts stay scarce
+// and feel valuable. `duration` mirrors the BoostsModal preset.
+//
+// Cooldown is measured **from the moment the boost expires**, so the
+// post-cooldown `availableAt` we ship to the client is
+// `activeUntil + cooldown`.
+interface YandexBoostConfig {
+  duration: number; // seconds the boost is active
+  cooldown: number; // seconds between boost-expire and next activation
+}
+const YANDEX_BOOSTS: Record<string, YandexBoostConfig> = {
+  double:     { duration: 180, cooldown: 600 },  // x2, 3min active, 10min cooldown
+  triple:     { duration: 180, cooldown: 900 },  // x3, 3min active, 15min cooldown
+  snake_eyes: { duration: 180, cooldown: 900 },  // +1111, 3min, 15min cooldown
+  golden:     { duration: 60,  cooldown: 1800 }, // x5, 1min active, 30min cooldown
+};
+
+// Map a generic activate_boost request (boostId + optional parity) to the
+// concrete `boost_activated` payload that BoostsModal expects, ship it
+// over the local emitter, and schedule the follow-up `boost_expired` so
+// the post-cooldown timer kicks in even while the page stays open.
+function scheduleBoostLifecycle(
+  emit: (event: string, data: unknown) => void,
+  boostId: string,
+  parity: 'even' | 'odd' | undefined,
+): void {
+  const cfg = YANDEX_BOOSTS[boostId];
+  if (!cfg) {
+    console.warn('[yandex-boost] unknown boostId', boostId);
+    return;
+  }
+  const now = Date.now();
+  const activeUntil = now + cfg.duration * 1000;
+  const availableAt = activeUntil + cfg.cooldown * 1000;
+
+  emit('boost_activated', {
+    boostId,
+    activeUntil,
+    availableAt,
+    ...(parity ? { selectedParity: parity } : {}),
+  });
+
+  // Fire-and-forget timer — BoostsModal also runs its own checkActiveBoosts
+  // tick once a second that falls back to the saved availableAt when this
+  // event never lands (page in background, etc.).
+  setTimeout(() => {
+    emit('boost_expired', { boostId, availableAt });
+  }, cfg.duration * 1000);
+}
 
 export interface Friend {
   id: number;
@@ -131,6 +184,36 @@ class StubWebSocketClient {
         console.warn('[stub-ws] failed to persist custom dice', e);
       });
       this.emit('custom_dice_saved', { config: payload.config });
+      return;
+    }
+    if (payload.type === 'activate_boost') {
+      const boostId = String(payload.boostId ?? '');
+      const parity =
+        payload.parity === 'even' || payload.parity === 'odd'
+          ? (payload.parity as 'even' | 'odd')
+          : undefined;
+      // Gate every activation behind a rewarded ad — this is the whole
+      // point of the Yandex boost flow.
+      showRewardedVideo()
+        .then((rewarded) => {
+          if (!rewarded) {
+            this.emit('boost_activation_failed', { boostId, reason: 'ad_not_completed' });
+            return;
+          }
+          scheduleBoostLifecycle((e, d) => this.emit(e, d), boostId, parity);
+        })
+        .catch((e) => {
+          console.warn('[stub-ws] rewarded video flow threw', e);
+          this.emit('boost_activation_failed', { boostId, reason: 'ad_error' });
+        });
+      return;
+    }
+    if (payload.type === 'get_boost_states') {
+      // BoostsModal.init() already seeds defaults from localStorage; the
+      // stub only needs to acknowledge the request so the modal doesn't
+      // sit waiting. Echo an empty boosts array — the modal will fall
+      // back to its locally persisted state.
+      setTimeout(() => this.emit('boost_states', { boosts: [] }), 0);
       return;
     }
   }
@@ -248,6 +331,35 @@ class YandexLiveWSClient extends WebSocketClient {
   // no concept of solo rolls anyway). Intercept and short-circuit.
   override send(message: object) {
     const msg = message as any;
+    if (msg?.type === 'activate_boost') {
+      // Boost activation is rewarded-ad-gated and runs entirely client
+      // side on Yandex, whether or not multiplayer is connected. The
+      // server's own boost cooldowns are tuned for Telegram (4h-12h) —
+      // we don't want them gating ad-rewarded plays.
+      const boostId = String(msg.boostId ?? '');
+      const parity =
+        msg.parity === 'even' || msg.parity === 'odd'
+          ? (msg.parity as 'even' | 'odd')
+          : undefined;
+      showRewardedVideo()
+        .then((rewarded) => {
+          if (!rewarded) {
+            (this as any).emit?.('boost_activation_failed', { boostId, reason: 'ad_not_completed' });
+            return;
+          }
+          scheduleBoostLifecycle((e, d) => (this as any).emit?.(e, d), boostId, parity);
+        })
+        .catch((e) => {
+          console.warn('[yandex-ws] rewarded video flow threw', e);
+          (this as any).emit?.('boost_activation_failed', { boostId, reason: 'ad_error' });
+        });
+      return;
+    }
+    if (msg?.type === 'get_boost_states') {
+      // Locally persisted states are authoritative on Yandex — ack only.
+      setTimeout(() => (this as any).emit?.('boost_states', { boosts: [] }), 0);
+      return;
+    }
     if (msg?.type === 'solo_roll_complete') {
       const delta = Number(msg.earnedPips ?? msg.pips ?? 0);
       if (Number.isFinite(delta) && delta > 0) {

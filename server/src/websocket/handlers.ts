@@ -1397,6 +1397,23 @@ async function handleRestartGame(userId: number): Promise<void> {
   const playerIds = lobby.getLobbyPlayers(conn.lobbyId);
   const skipBetting = lobby.isNoBetLobby(conn.lobbyId);
 
+  // Refuse to restart a multiplayer match with a single player. Without
+  // this guard, a host whose opponents pressed "Exit" on the post-game
+  // result modal can keep pressing "New Game" and play with themselves.
+  // The Yandex `MultiplayerLobbyGuard` already auto-leaves the lobby on
+  // the first opponent drop client-side, but raw `restart_game` messages
+  // (devtools, modded client) can bypass that — this is the server-side
+  // safety net. `handleStartGame` intentionally still allows 1-player
+  // starts for solo Free Roll lobbies that have not had a multiplayer
+  // match yet.
+  if (playerIds.length < 2) {
+    connections.send(userId, {
+      type: 'error',
+      message: 'Need at least 2 players to start a new round',
+    });
+    return;
+  }
+
   if (!skipBetting && playerIds.length >= 2) {
     BettingManager.initialize(conn.lobbyId, lobby.getLobbyBetAmount(conn.lobbyId));
     logger.info('[BETTING] Initialized for restart', { lobbyId: conn.lobbyId, playerCount: playerIds.length });

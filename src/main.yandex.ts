@@ -18,6 +18,10 @@ import {
 import { cloudSave } from './yandex/cloudSave';
 import { SoloUI } from './yandex/SoloUI';
 import { loadYandexAuth } from './yandex/yandexAuth';
+import { BoostsModal } from './ui/BoostsModal';
+import { ReactionWheel } from './ui/ReactionWheel';
+import { MultiplayerReconnectDialog } from './yandex/MultiplayerReconnectDialog';
+import { MultiplayerLobbyGuard } from './yandex/MultiplayerLobbyGuard';
 // Bring the multiplayer stub onto window — Game.ts and a few other modules
 // look up `(window as any).wsClient` directly, so the stub must be reachable
 // the same way the real client is in the Telegram build.
@@ -46,6 +50,48 @@ game.start();
 const soloUI = new SoloUI(game);
 soloUI.mount();
 (window as any).soloUI = soloUI;
+
+// Initialize the boosts system. Listeners on wsClient (which is the Yandex
+// stub here — see ./yandex/stubs/WebSocketClient.ts) drive cooldown timers
+// and ad-rewarded activation. The boost button itself is mounted by SoloUI.
+BoostsModal.init();
+
+// Mount the chat / emoji wheel. SoloUI ships a dedicated chat button next
+// to the boost icon that calls `window.reactionWheel.openWheelPublic()`.
+// In solo gameplay it acts as expressive feedback — the user's own emoji
+// pops up in the corner; no server round-trip happens (the stub wsClient
+// ignores unknown `send_reaction` payloads).
+const reactionWheel = new ReactionWheel();
+(window as any).reactionWheel = reactionWheel;
+
+// Reconnect-to-active-game dialog. The Telegram build owns this flow
+// inside `MultiplayerUI` which mounts at startup; on Yandex the lobby UI
+// is lazy, so we mount a dedicated module that subscribes to `auth_success`
+// + `canReconnect` from the moment the page loads. Only meaningful when
+// VITE_WS_URL is configured (live multiplayer mode) — the offline stub
+// never emits `canReconnect`, so the dialog stays dormant.
+const multiplayerReconnect = new MultiplayerReconnectDialog();
+multiplayerReconnect.mount();
+(window as any).multiplayerReconnect = multiplayerReconnect;
+
+// Prevent the host from being left alone in a multiplayer lobby after a
+// game ends: if any opponent leaves while a match is active (in-game or
+// in the post-game result modal), drop the host too. Mirrors the
+// `player_left` handler the Telegram MultiplayerUI already runs at
+// src/ui/MultiplayerUI.ts:833. Without this the host can press
+// "New Game" while alone and play with themselves.
+const multiplayerLobbyGuard = new MultiplayerLobbyGuard();
+multiplayerLobbyGuard.mount();
+(window as any).multiplayerLobbyGuard = multiplayerLobbyGuard;
+
+// Sync the boost icon's visibility with the current game mode (the Yandex
+// GameSync stub always reports "not in multiplayer", so on the idle screen
+// the icon stays visible). Run on the next tick so the DOM is ready.
+setTimeout(() => {
+  if (typeof (game as any).updateUIVisibility === 'function') {
+    (game as any).updateUIVisibility();
+  }
+}, 100);
 
 // Block native pull-to-refresh on mobile, same as the Telegram build.
 document.body.addEventListener(

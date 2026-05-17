@@ -16,6 +16,7 @@ import { cloudSave } from './cloudSave';
 import { SoloShop } from './SoloShop';
 import { SoloInventory } from './SoloInventory';
 import { DiceEditorModal } from '../ui/DiceEditorModal';
+import { BoostsModal } from '../ui/BoostsModal';
 import { MultiplayerLobbyUI } from './MultiplayerLobbyUI';
 import { haptic, isPlayerAuthorized, openAuthDialog } from './platform';
 import { getCurrentLanguage, setLanguage, onLanguageChange, t } from '../../shared/i18n';
@@ -71,19 +72,54 @@ function ensureStyles(): void {
       border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.6);
       display: flex; flex-direction: column; gap: 16px;
     }
-    .yui-settings-panel h2 { font-size: 18px; }
+    .yui-settings-panel h2 {
+      font-size: 18px; margin: 0;
+      text-align: center;
+    }
+    /* Settings rows are stacked: label on top, control below.
+       Avoids the previous horizontal squeeze where long RU labels
+       ("Качество графики", "Подтверждение броска") would push the
+       segmented buttons off the row and wrap unpredictably.
+
+       The "actions" variant (Close button) stays a single flex column
+       and is right-aligned. */
     .yui-row {
-      display: flex; align-items: center; justify-content: space-between;
-      gap: 12px;
+      display: flex; flex-direction: column;
+      align-items: stretch; gap: 6px;
     }
-    .yui-row label { font-size: 14px; opacity: 0.8; }
-    .yui-row select, .yui-row input[type=range] {
-      flex: 1; max-width: 200px;
+    .yui-row.actions {
+      align-items: stretch;
+      margin-top: 4px;
     }
-    .yui-row select {
-      padding: 6px 10px; border-radius: 8px;
-      background: rgba(255,255,255,0.08); color: #fff; border: 0;
-      font-family: inherit;
+    .yui-row > label {
+      font-size: 13px; font-weight: 600;
+      opacity: 0.7; letter-spacing: 0.02em;
+    }
+    /* Segmented control: each button claims equal width so the active
+       indicator never jumps when labels of different lengths are
+       selected. */
+    .yui-segmented {
+      display: flex; gap: 4px;
+      background: rgba(255,255,255,0.04);
+      border-radius: 10px; padding: 4px;
+    }
+    .yui-segmented button {
+      flex: 1 1 0; min-width: 0;
+      padding: 8px 6px; border-radius: 7px; border: 0;
+      background: transparent; color: #fff;
+      font-family: inherit; font-size: 13px; font-weight: 600;
+      cursor: pointer; text-align: center;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      transition: background 0.15s, color 0.15s;
+    }
+    .yui-segmented button:hover {
+      background: rgba(255,255,255,0.06);
+    }
+    .yui-segmented button.active {
+      background: #ffd84d; color: #1a1a1a;
+    }
+    .yui-row input[type=range] {
+      width: 100%; accent-color: #ffd84d;
     }
     .yui-btn {
       padding: 10px 14px; border-radius: 8px; border: 0;
@@ -92,6 +128,76 @@ function ensureStyles(): void {
     }
     .yui-btn.primary { background: #ffd84d; color: #1a1a1a; }
     .yui-btn.ghost { background: rgba(255,255,255,0.08); color: #fff; }
+
+    /* Floating boost button on the idle screen. Mirrors the Telegram
+       build's #boost-icon position (bottom-center) so behaviour and
+       muscle memory are consistent. The icon is hidden during an
+       active multiplayer game by Game.updateUIVisibility(); on Yandex
+       the GameSync stub always reports "not in multiplayer", so the
+       icon stays visible on idle. */
+    #boost-icon {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 56px;
+      height: 56px;
+      background: rgba(0, 0, 0, 0.55);
+      border: 0;
+      border-radius: 50%;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: transform 0.2s, background 0.2s;
+      pointer-events: auto;
+      z-index: 150;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+    }
+    #boost-icon:hover { transform: translateX(-50%) scale(1.08); background: rgba(0, 0, 0, 0.75); }
+    #boost-icon:active { transform: translateX(-50%) scale(0.95); }
+    #boost-icon svg { filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4)); }
+
+    /* Chat / emoji wheel button. Mirrors the boost icon's bottom inset
+       and dimensions but is anchored to the bottom-right corner of the
+       viewport instead of bottom-center, so during a multiplayer match
+       (where this button is shown — see Game.updateUIVisibility) it
+       doesn't overlap any of the in-game HUD elements.
+
+       Hidden by default; only revealed during an active multiplayer
+       game, matching the Telegram build where ReactionWheel is only
+       accessible while in a multiplayer match. */
+    #chat-icon {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      width: 56px;
+      height: 56px;
+      background: rgba(0, 0, 0, 0.55);
+      border: 0; color: #fff;
+      border-radius: 50%;
+      display: none;
+      align-items: center; justify-content: center;
+      cursor: pointer; pointer-events: auto;
+      z-index: 150;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+      transition: transform 0.2s, background 0.2s;
+    }
+    #chat-icon:hover { transform: scale(1.08); background: rgba(0, 0, 0, 0.75); }
+    #chat-icon:active { transform: scale(0.95); }
+    #chat-icon svg { filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4)); }
+    @keyframes pulse {
+      0%, 100% { transform: translateX(-50%) scale(1); }
+      50% { transform: translateX(-50%) scale(1.12); }
+    }
+    @keyframes slideDown {
+      from { transform: translateX(-50%) translateY(-20px); opacity: 0; }
+      to { transform: translateX(-50%) translateY(0); opacity: 1; }
+    }
+    @keyframes slideUp {
+      from { transform: translateX(-50%) translateY(0); opacity: 1; }
+      to { transform: translateX(-50%) translateY(-20px); opacity: 0; }
+    }
 
     /* Styles below are re-exported from MultiplayerUI for the shared
        DiceEditorModal, which the Yandex solo build opens directly. */
@@ -123,6 +229,28 @@ const ICON_MENU = `
   </svg>
 `;
 
+// Same gold zap glyph the Telegram build ships in index.html for #boost-icon.
+const ICON_BOOST = `
+  <svg width="32" height="32" viewBox="0 0 24 24">
+    <defs>
+      <linearGradient id="yui-gold" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#FFD700" stop-opacity="1" />
+        <stop offset="100%" stop-color="#FFA500" stop-opacity="1" />
+      </linearGradient>
+    </defs>
+    <path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z" fill="url(#yui-gold)"/>
+  </svg>
+`;
+
+// Speech-bubble glyph for the chat / emoji wheel button. Same dimensions
+// as the boost zap glyph (32x32) so both icons read at the same visual
+// weight when the button shows up during a multiplayer game.
+const ICON_CHAT = `
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+    <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+`;
+
 export class SoloUI {
   private game: Game;
   private shop: SoloShop;
@@ -132,6 +260,7 @@ export class SoloUI {
   private menuButton!: HTMLElement;
   private settingsOverlay: HTMLElement | null = null;
   private multiplayer: MultiplayerLobbyUI | null = null;
+  private boostButton!: HTMLElement;
 
   constructor(game: Game) {
     this.game = game;
@@ -155,6 +284,10 @@ export class SoloUI {
     if (!this.multiplayer) {
       this.multiplayer = new MultiplayerLobbyUI();
       this.multiplayer.mount();
+      // Expose for MultiplayerReconnectDialog to dismiss it after a
+      // successful reconnect (so the lobby modal doesn't hang over the
+      // in-game HUD).
+      (window as any).multiplayerLobbyUI = this.multiplayer;
     }
     this.multiplayer.open();
   }
@@ -175,6 +308,9 @@ export class SoloUI {
     this.balanceEl.className = 'yui-balance';
     document.body.appendChild(this.balanceEl);
 
+    this.mountBoostButton();
+    this.mountChatButton();
+
     this.renderMenu();
     this.refreshBalance();
     this.startBalanceTicker();
@@ -187,6 +323,67 @@ export class SoloUI {
       if (this.menuEl.contains(target) || this.menuButton.contains(target)) return;
       this.menuEl.classList.remove('open');
     });
+  }
+
+  /**
+   * Mount the boost button at the bottom of the idle screen and wire it
+   * up to BoostsModal. The Telegram build hard-codes this element in
+   * index.html; we create it in JS for parity. BoostsModal.init() does
+   * the rest (cooldown timers, ad-rewarded activation via the Yandex
+   * stub WS client). Game.updateUIVisibility() toggles its visibility
+   * when entering/leaving a live multiplayer game.
+   */
+  private mountBoostButton(): void {
+    let button = document.getElementById('boost-icon') as HTMLButtonElement | null;
+    if (!button) {
+      const created = document.createElement('button');
+      created.id = 'boost-icon';
+      created.type = 'button';
+      created.setAttribute('aria-label', 'Boosts');
+      created.innerHTML = ICON_BOOST;
+      document.body.appendChild(created);
+      button = created;
+    } else {
+      button.innerHTML = ICON_BOOST;
+    }
+    button.addEventListener('click', () => {
+      haptic.light();
+      BoostsModal.toggle();
+    });
+    this.boostButton = button;
+    // Make sure the icon is visible immediately on the idle screen.
+    // Game.updateUIVisibility() will keep it correct as multiplayer
+    // toggles, but on first paint that runs before the canvas dimensions
+    // are settled, so we show it eagerly here too.
+    this.boostButton.style.display = 'flex';
+  }
+
+  /**
+   * Mount the chat / emoji wheel button in the bottom-right corner.
+   * Mirrors the Telegram build's reaction flow, where the ReactionWheel
+   * is only accessible during an active multiplayer match. We give the
+   * button id `chat-icon` so `Game.updateUIVisibility()` can toggle it
+   * in lockstep with `#boost-icon` (boost visible on idle, chat visible
+   * during multiplayer).
+   *
+   * main.yandex.ts is responsible for constructing the ReactionWheel
+   * and exposing it as `window.reactionWheel`. We just attach the
+   * trigger here so the button mounts with the rest of SoloUI.
+   */
+  private mountChatButton(): void {
+    const button = document.createElement('button');
+    button.id = 'chat-icon';
+    button.type = 'button';
+    button.setAttribute('aria-label', 'Reactions');
+    button.innerHTML = ICON_CHAT;
+    button.addEventListener('click', () => {
+      haptic.light();
+      const wheel = (window as any).reactionWheel;
+      if (wheel && typeof wheel.openWheelPublic === 'function') {
+        wheel.openWheelPublic();
+      }
+    });
+    document.body.appendChild(button);
   }
 
   private toggleMenu(): void {
@@ -250,35 +447,68 @@ export class SoloUI {
     }
   }
 
+  /**
+   * Settings panel. Rebuilt every time it opens so language toggles
+   * re-render the localized labels, and so the current control-mode /
+   * graphics selection always reflects the latest persisted state.
+   */
   private openSettings(): void {
     if (this.settingsOverlay) {
-      this.settingsOverlay.style.display = 'flex';
-      return;
+      this.settingsOverlay.remove();
+      this.settingsOverlay = null;
     }
     this.settingsOverlay = document.createElement('div');
     this.settingsOverlay.className = 'yui-settings-overlay';
     const settings = cloudSave.getSettings();
+    const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    const game = this.game as any;
+    const controlMode: 'motion' | 'manual' =
+      typeof game.getControlMode === 'function' ? game.getControlMode() : 'motion';
+    const gfx = settings.graphics;
+    const lang = getCurrentLanguage();
+
+    const segGraphics = `
+      <div class="yui-segmented" data-group="graphics">
+        <button data-value="low" class="${gfx === 'low' ? 'active' : ''}">${escapeHtml(t('settings.graphicsLow') || 'Low')}</button>
+        <button data-value="medium" class="${gfx === 'medium' ? 'active' : ''}">${escapeHtml(t('settings.graphicsMedium') || 'Medium')}</button>
+        <button data-value="high" class="${gfx === 'high' ? 'active' : ''}">${escapeHtml(t('settings.graphicsHigh') || 'High')}</button>
+      </div>
+    `;
+    const segLang = `
+      <div class="yui-segmented" data-group="lang">
+        <button data-value="en" class="${lang === 'en' ? 'active' : ''}">English</button>
+        <button data-value="ru" class="${lang === 'ru' ? 'active' : ''}">Русский</button>
+      </div>
+    `;
+    // Control mode only makes sense on a touch device — motion mode reads
+    // devicemotion events that desktops don't fire.
+    const segControls = isTouch
+      ? `
+        <div class="yui-row">
+          <label>${escapeHtml(t('settings.controls') || 'Controls')}</label>
+          <div class="yui-segmented" data-group="controls">
+            <button data-value="motion" class="${controlMode === 'motion' ? 'active' : ''}">${escapeHtml(t('settings.controlsMotion') || 'Motion')}</button>
+            <button data-value="manual" class="${controlMode === 'manual' ? 'active' : ''}">${escapeHtml(t('settings.controlsManual') || 'Manual')}</button>
+          </div>
+        </div>
+      `
+      : '';
+
     this.settingsOverlay.innerHTML = `
       <div class="yui-settings-panel">
         <h2>${escapeHtml(t('settings.title') || 'Settings')}</h2>
+        ${segControls}
         <div class="yui-row">
-          <label for="yui-graphics">${escapeHtml(t('settings.graphics') || 'Graphics')}</label>
-          <select id="yui-graphics">
-            <option value="low" ${settings.graphics === 'low' ? 'selected' : ''}>Low</option>
-            <option value="medium" ${settings.graphics === 'medium' ? 'selected' : ''}>Medium</option>
-            <option value="high" ${settings.graphics === 'high' ? 'selected' : ''}>High</option>
-          </select>
+          <label>${escapeHtml(t('settings.graphics') || 'Graphics')}</label>
+          ${segGraphics}
         </div>
         <div class="yui-row">
           <label for="yui-volume">${escapeHtml(t('settings.sound') || 'Sound')}</label>
           <input id="yui-volume" type="range" min="0" max="1" step="0.05" value="${settings.soundVolume}" />
         </div>
         <div class="yui-row">
-          <label for="yui-lang">${escapeHtml(t('settings.language') || 'Language')}</label>
-          <select id="yui-lang">
-            <option value="en" ${getCurrentLanguage() === 'en' ? 'selected' : ''}>English</option>
-            <option value="ru" ${getCurrentLanguage() === 'ru' ? 'selected' : ''}>Русский</option>
-          </select>
+          <label>${escapeHtml(t('settings.language') || 'Language')}</label>
+          ${segLang}
         </div>
         <div class="yui-row">
           <button class="yui-btn ghost" id="yui-close">${escapeHtml(t('buttons.close') || 'Close')}</button>
@@ -287,26 +517,49 @@ export class SoloUI {
     `;
     document.body.appendChild(this.settingsOverlay);
 
-    const graphicsEl = this.settingsOverlay.querySelector<HTMLSelectElement>('#yui-graphics');
-    graphicsEl?.addEventListener('change', () => {
-      const value = graphicsEl.value as 'low' | 'medium' | 'high';
-      cloudSave.updateSettings({ graphics: value });
-      (this.game as any).setGraphicsQuality?.(value);
+    const overlay = this.settingsOverlay;
+    const onSegClick = (group: string, handler: (value: string) => void) => {
+      overlay.querySelectorAll(`[data-group="${group}"] button`).forEach((el) => {
+        el.addEventListener('click', () => {
+          const value = (el as HTMLElement).dataset.value!;
+          overlay
+            .querySelectorAll(`[data-group="${group}"] button`)
+            .forEach((b) => b.classList.remove('active'));
+          (el as HTMLElement).classList.add('active');
+          handler(value);
+        });
+      });
+    };
+
+    onSegClick('graphics', (value) => {
+      const v = value as 'low' | 'medium' | 'high';
+      cloudSave.updateSettings({ graphics: v });
+      (this.game as any).setGraphicsQuality?.(v);
     });
-    const volEl = this.settingsOverlay.querySelector<HTMLInputElement>('#yui-volume');
+    onSegClick('lang', (value) => {
+      setLanguage(value as Language);
+      cloudSave.updateSettings({ language: value as Language });
+      // Re-open so labels re-render in the newly selected language.
+      this.openSettings();
+    });
+    if (isTouch) {
+      onSegClick('controls', (value) => {
+        const mode = value as 'motion' | 'manual';
+        if (typeof game.setControlMode === 'function') {
+          game.setControlMode(mode);
+        }
+      });
+    }
+
+    const volEl = overlay.querySelector<HTMLInputElement>('#yui-volume');
     volEl?.addEventListener('input', () => {
       const v = parseFloat(volEl.value);
       cloudSave.updateSettings({ soundVolume: v });
       (this.game as any).setSoundVolume?.(v);
     });
-    const langEl = this.settingsOverlay.querySelector<HTMLSelectElement>('#yui-lang');
-    langEl?.addEventListener('change', () => {
-      const lang = langEl.value as Language;
-      setLanguage(lang);
-      cloudSave.updateSettings({ language: lang });
-    });
-    this.settingsOverlay.querySelector('#yui-close')?.addEventListener('click', () => {
-      if (this.settingsOverlay) this.settingsOverlay.style.display = 'none';
+    overlay.querySelector('#yui-close')?.addEventListener('click', () => {
+      overlay.remove();
+      this.settingsOverlay = null;
     });
   }
 

@@ -1913,15 +1913,35 @@ export class Game {
   }
   
   private waitForDiceToStop() {
+    // Require sustained stillness — a die can momentarily slip below the
+    // velocity threshold while still mid-tumble (e.g. balanced on an edge
+    // about to fall). If we read getTopFace() at that instant the score is
+    // wrong. Wait until every die has been below the threshold for several
+    // consecutive checks before reading the result.
+    const REQUIRED_CONSECUTIVE_STOPPED = 4; // 4 * 100ms = 400ms of true stillness
+    const HARD_TIMEOUT_MS = 8000;           // never wait longer than 8s
+    let consecutiveStopped = 0;
+    const startedAt = Date.now();
+
     const checkInterval = setInterval(() => {
       const allStopped = this.dice.every(d => {
         const vel = d.body.velocity.length();
         const angVel = d.body.angularVelocity.length();
         return vel < 0.02 && angVel < 0.02;
       });
-      
+
       if (allStopped) {
+        consecutiveStopped++;
+      } else {
+        consecutiveStopped = 0;
+      }
+
+      const timedOut = Date.now() - startedAt > HARD_TIMEOUT_MS;
+      if (consecutiveStopped >= REQUIRED_CONSECUTIVE_STOPPED || timedOut) {
         clearInterval(checkInterval);
+        if (timedOut) {
+          (window as any).debugLog?.('DICE', `waitForDiceToStop timeout after ${HARD_TIMEOUT_MS}ms`);
+        }
         this.checkDiceValidityAndShowResult();
       }
     }, 100);
@@ -2619,6 +2639,13 @@ export class Game {
   public getDiceSync() {
     return this.diceSync;
   }
+
+  // Public method to get game sync instance. Used by the Yandex
+  // `MultiplayerLobbyGuard` to read `isMultiplayerActive()` from a
+  // `player_left` event handler that lives outside the Game class.
+  public getGameSync() {
+    return this.gameSync;
+  }
   
   // Public method to check if dice are in hand
   public isDiceInHand(): boolean {
@@ -2649,19 +2676,24 @@ export class Game {
     const isMultiplayer = this.gameSync.isMultiplayerActive();
     const resultEl = document.getElementById('result');
     const boostIcon = document.getElementById('boost-icon');
-    
-    (window as any).debugLog?.('UI', `updateUIVisibility: multiplayer=${isMultiplayer}, result=${!!resultEl}, boost=${!!boostIcon}`);
-    
+    // Yandex-only floating chat button; absent on Telegram (the wheel
+    // there is triggered by clicking the result text directly).
+    const chatIcon = document.getElementById('chat-icon');
+
+    (window as any).debugLog?.('UI', `updateUIVisibility: multiplayer=${isMultiplayer}, result=${!!resultEl}, boost=${!!boostIcon}, chat=${!!chatIcon}`);
+
     if (isMultiplayer) {
-      // In multiplayer: show result, hide boost icon
+      // In multiplayer: show result + chat, hide boost icon
       if (resultEl) resultEl.style.display = '';
       if (boostIcon) boostIcon.style.display = 'none';
-      (window as any).debugLog?.('UI', 'Multiplayer mode: result visible, boost hidden');
+      if (chatIcon) chatIcon.style.display = 'flex';
+      (window as any).debugLog?.('UI', 'Multiplayer mode: result+chat visible, boost hidden');
     } else {
-      // In online mode: hide result, show boost icon
+      // In online mode: hide result + chat, show boost icon
       if (resultEl) resultEl.style.display = 'none';
       if (boostIcon) boostIcon.style.display = 'flex';
-      (window as any).debugLog?.('UI', 'Online mode: result hidden, boost visible');
+      if (chatIcon) chatIcon.style.display = 'none';
+      (window as any).debugLog?.('UI', 'Online mode: result+chat hidden, boost visible');
     }
   }
   
@@ -3284,38 +3316,57 @@ export class Game {
   private highlightDice(diceIndex: number) {
     const dice = this.dice[diceIndex];
     if (!dice) return;
-    
-    // Add visual highlight - glow effect
+
+    // Dice meshes are built with one MeshPhysicalMaterial per face (see
+    // Dice.createMaterials), so `mesh.material` is an array. We have to
+    // walk every face material individually — the old single-material cast
+    // crashed silently because `.emissive` is undefined on the array.
     const mesh = dice.mesh;
-    
-    // Store original emissive if not already stored
-    if (!(mesh.material as any)._originalEmissive) {
-      (mesh.material as any)._originalEmissive = (mesh.material as THREE.MeshStandardMaterial).emissive.clone();
-      (mesh.material as any)._originalEmissiveIntensity = (mesh.material as THREE.MeshStandardMaterial).emissiveIntensity;
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+
+    for (const raw of materials) {
+      const mat = raw as THREE.MeshStandardMaterial;
+      if (!mat || !mat.emissive) continue;
+
+      // Stash the original emissive once so we can restore it later.
+      if (!(mat as any)._originalEmissive) {
+        (mat as any)._originalEmissive = mat.emissive.clone();
+        (mat as any)._originalEmissiveIntensity = mat.emissiveIntensity;
+      }
+
+      mat.emissive.setHex(0xFFD700);
+      mat.emissiveIntensity = 0.5;
+      mat.needsUpdate = true;
     }
-    
-    // Set emissive glow (yellow/gold)
-    (mesh.material as THREE.MeshStandardMaterial).emissive.setHex(0xFFD700);
-    (mesh.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.5;
-    
+
     // Play feedback
     this.audio.playDiceHit(0.3);
     triggerHaptic('light');
   }
-  
+
   private unhighlightDice(diceIndex: number) {
     const dice = this.dice[diceIndex];
     if (!dice) return;
-    
+
     const mesh = dice.mesh;
-    const material = mesh.material as THREE.MeshStandardMaterial;
-    
-    // Restore original emissive
-    if ((material as any)._originalEmissive) {
-      material.emissive.copy((material as any)._originalEmissive);
-      material.emissiveIntensity = (material as any)._originalEmissiveIntensity || 0;
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+
+    for (const raw of materials) {
+      const mat = raw as THREE.MeshStandardMaterial;
+      if (!mat || !mat.emissive) continue;
+
+      const orig = (mat as any)._originalEmissive as THREE.Color | undefined;
+      if (orig) {
+        mat.emissive.copy(orig);
+        mat.emissiveIntensity = (mat as any)._originalEmissiveIntensity ?? 0;
+      } else {
+        // No stash → assume default (no glow).
+        mat.emissive.setHex(0x000000);
+        mat.emissiveIntensity = 0;
+      }
+      mat.needsUpdate = true;
     }
-    
+
     // Play feedback
     this.audio.playDiceHit(0.2);
     triggerHaptic('light');
