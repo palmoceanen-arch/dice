@@ -1424,20 +1424,27 @@ export class Game {
 
 
   private setupControls() {
-    // Touch to init audio (required by browsers)
-    let audioInitialized = false;
+    // Audio MUST be unlocked from inside a real user gesture (touch/click)
+    // on iOS / Yandex's iOS WebView. We don't use `{ once: true }` here
+    // because the first attempt can fail (flaky mobile network during the
+    // sounds fetch, ad iframe stealing the gesture, etc.) and we want
+    // subsequent gestures to retry — AudioManager.init() is idempotent
+    // and short-circuits once the buffers are loaded.
     const initAudioOnce = async () => {
-      if (audioInitialized) return;
-      audioInitialized = true;
+      // Call directly so the synchronous unlock half of init() runs inside
+      // the current task — `await` would push it past the gesture token.
       await this.audio.init();
     };
-    
-    // Init audio on ANY touch/click
-    const initHandler = async () => {
-      await initAudioOnce();
+
+    const initHandler = () => {
+      // Fire-and-forget; we don't want to block the gesture path.
+      void initAudioOnce();
     };
-    document.addEventListener('touchstart', initHandler, { once: true, passive: true });
-    document.addEventListener('click', initHandler, { once: true });
+    document.addEventListener('touchstart', initHandler, { passive: true });
+    document.addEventListener('touchend', initHandler, { passive: true });
+    document.addEventListener('click', initHandler);
+    document.addEventListener('pointerdown', initHandler, { passive: true });
+    document.addEventListener('keydown', initHandler);
     
     // Desktop controls - hold and drag to shake, swipe up to throw
     if (!this.shakeDetector.isMobile) {
@@ -3303,75 +3310,33 @@ export class Game {
     if (this.selectedDiceForReroll.has(diceIndex)) {
       // Deselect
       this.selectedDiceForReroll.delete(diceIndex);
-      this.unhighlightDice(diceIndex);
+      this.setDiceHighlight(diceIndex, false);
     } else {
       // Select
       this.selectedDiceForReroll.add(diceIndex);
-      this.highlightDice(diceIndex);
-    }
-    
-    (window as any).debugLog?.('PALMOS', `Selected: ${Array.from(this.selectedDiceForReroll).join(',')}`);
-  }
-  
-  private highlightDice(diceIndex: number) {
-    const dice = this.dice[diceIndex];
-    if (!dice) return;
-
-    // Dice meshes are built with one MeshPhysicalMaterial per face (see
-    // Dice.createMaterials), so `mesh.material` is an array. We have to
-    // walk every face material individually — the old single-material cast
-    // crashed silently because `.emissive` is undefined on the array.
-    const mesh = dice.mesh;
-    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-
-    for (const raw of materials) {
-      const mat = raw as THREE.MeshStandardMaterial;
-      if (!mat || !mat.emissive) continue;
-
-      // Stash the original emissive once so we can restore it later.
-      if (!(mat as any)._originalEmissive) {
-        (mat as any)._originalEmissive = mat.emissive.clone();
-        (mat as any)._originalEmissiveIntensity = mat.emissiveIntensity;
-      }
-
-      mat.emissive.setHex(0xFFD700);
-      mat.emissiveIntensity = 0.5;
-      mat.needsUpdate = true;
+      this.setDiceHighlight(diceIndex, true);
     }
 
-    // Play feedback
+    // Play feedback for the local toggle.
     this.audio.playDiceHit(0.3);
     triggerHaptic('light');
+
+    (window as any).debugLog?.('PALMOS', `Selected: ${Array.from(this.selectedDiceForReroll).join(',')}`);
   }
 
-  private unhighlightDice(diceIndex: number) {
+  // Toggle the per-die outline shell. Previously we modified each face
+  // material's emissive colour, but materials are pooled across dice
+  // instances inside `Dice.materialCache` — so highlighting one die would
+  // tint every other die that happens to share the same config (which is
+  // every die in Palmo's Dice, since they all use the player's equipped
+  // skin). The outline mesh is a per-instance child of the dice, so
+  // toggling it only affects the clicked die.
+  private setDiceHighlight(diceIndex: number, selected: boolean) {
     const dice = this.dice[diceIndex];
     if (!dice) return;
-
-    const mesh = dice.mesh;
-    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-
-    for (const raw of materials) {
-      const mat = raw as THREE.MeshStandardMaterial;
-      if (!mat || !mat.emissive) continue;
-
-      const orig = (mat as any)._originalEmissive as THREE.Color | undefined;
-      if (orig) {
-        mat.emissive.copy(orig);
-        mat.emissiveIntensity = (mat as any)._originalEmissiveIntensity ?? 0;
-      } else {
-        // No stash → assume default (no glow).
-        mat.emissive.setHex(0x000000);
-        mat.emissiveIntensity = 0;
-      }
-      mat.needsUpdate = true;
-    }
-
-    // Play feedback
-    this.audio.playDiceHit(0.2);
-    triggerHaptic('light');
+    dice.setSelected(selected);
   }
-  
+
   public enableDiceSelection() {
     this.diceSelectionEnabled = true;
     (window as any).debugLog?.('PALMOS', 'Selection enabled');
@@ -3385,10 +3350,13 @@ export class Game {
   }
   
   public clearDiceSelection() {
-    // Unhighlight all selected dice
-    this.selectedDiceForReroll.forEach(index => {
-      this.unhighlightDice(index);
-    });
+    // Drop any outline that may have been left on by either local
+    // selection or a remote `showOtherPlayerDiceSelection` call —
+    // iterating over `dice` (not just `selectedDiceForReroll`) ensures
+    // remote highlights are also cleared.
+    for (const dice of this.dice) {
+      if (dice.isSelected()) dice.setSelected(false);
+    }
     this.selectedDiceForReroll.clear();
   }
   
@@ -3403,14 +3371,17 @@ export class Game {
   // Show which dice another player selected for reroll (visual feedback)
   public showOtherPlayerDiceSelection(selectedIndices: number[]) {
     (window as any).debugLog?.('PALMOS', `Showing other player's selection: [${selectedIndices.join(',')}]`);
-    
+
     // Clear any existing selection first
     this.clearDiceSelection();
-    
-    // Highlight the selected dice
+
+    // Highlight only the dice the other player picked. We do NOT update
+    // `selectedDiceForReroll` because that set tracks the local player's
+    // own selection; the remote highlight is purely visual and is wiped
+    // by the next `throw_start` / `clearDiceSelection`.
     selectedIndices.forEach(index => {
       if (index >= 0 && index < this.dice.length) {
-        this.highlightDice(index);
+        this.setDiceHighlight(index, true);
       }
     });
     

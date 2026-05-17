@@ -243,32 +243,68 @@ export async function joinLobby(lobbyId: string, userId: number): Promise<boolea
   return true;
 }
 
-export async function leaveLobby(lobbyId: string, userId: number): Promise<boolean> {
+export interface LeaveLobbyResult {
+  // True if the lobby itself was closed as a result of this leave call
+  // (either because it became empty, or because the game is in progress
+  // and not enough players remain to continue).
+  closed: boolean;
+  // Why we closed the lobby; undefined when we left it alive.
+  closedReason?: 'empty' | 'insufficient_players';
+  // Player ids that were still in the lobby at the moment we computed
+  // the close decision. Useful for sending them a `game_ended_by_disconnect`
+  // when `closedReason === 'insufficient_players'`.
+  remainingPlayers: number[];
+}
+
+export async function leaveLobby(lobbyId: string, userId: number): Promise<LeaveLobbyResult> {
   await query(
     `UPDATE lobby_players SET status = 'left' WHERE lobby_id = $1 AND user_id = $2`,
     [lobbyId, userId]
   );
-  
+
   // Update connection
   const conn = connections.getConnection(userId);
   if (conn) {
     conn.lobbyId = null;
     conn.inGame = false;
   }
-  
+
   // Update in-memory state
   const state = activeLobbies.get(lobbyId);
+  let closed = false;
+  let closedReason: 'empty' | 'insufficient_players' | undefined;
+  let remainingPlayers: number[] = [];
+
   if (state) {
     state.players.delete(userId);
     state.votes.delete(userId);
-    
-    // If no players left, close lobby
+    remainingPlayers = Array.from(state.players);
+
     if (state.players.size === 0) {
+      // Nobody is left → close the lobby outright.
       await closeLobby(lobbyId);
+      closed = true;
+      closedReason = 'empty';
+    } else if (state.status === 'playing' && state.players.size < 2) {
+      // Game in progress but the match can no longer continue (fewer
+      // than 2 players left). Force-end it instead of letting the
+      // remaining player sit alone forever or, worse, restart a "new
+      // game" with themselves. Mirrors the timeout branch in
+      // `markPlayerDisconnected` further down this file.
+      for (const remainingUserId of state.players) {
+        const remainingConn = connections.getConnection(remainingUserId);
+        if (remainingConn) {
+          remainingConn.lobbyId = null;
+          remainingConn.inGame = false;
+        }
+      }
+      await closeLobby(lobbyId);
+      closed = true;
+      closedReason = 'insufficient_players';
     }
   }
-  
-  return true;
+
+  return { closed, closedReason, remainingPlayers };
 }
 
 export async function closeLobby(lobbyId: string): Promise<void> {

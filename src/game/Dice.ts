@@ -57,11 +57,22 @@ function mergeDiceConfig(input: DiceConfig): DiceConfig {
   return merged;
 }
 
+// Selection outline color (Palmo's Dice reroll selection).
+const OUTLINE_COLOR = 0xFFD700;
+const OUTLINE_SCALE = 1.08;
+
 export class Dice {
   mesh: THREE.Mesh;
   body: CANNON.Body;
   private config: DiceConfig;
-  
+  // Glow-outline child mesh used to highlight per-die selection (Palmo's
+  // Dice reroll). Hidden by default. We use a slightly larger, back-face
+  // rendered shell so the dice's own materials (which are pooled in
+  // `Dice.materialCache` and therefore shared across instances) stay
+  // untouched — toggling selection on one die does not bleed into others.
+  private outlineMesh: THREE.Mesh;
+  private selected = false;
+
   // Interpolation state
   private prevPosition = new THREE.Vector3();
   private prevQuaternion = new THREE.Quaternion();
@@ -97,6 +108,9 @@ export class Dice {
     this.mesh = new THREE.Mesh(geometry, materials);
     this.mesh.castShadow = true;
     scene.add(this.mesh);
+
+    this.outlineMesh = this.buildOutlineMesh(bevelRadius ?? DEFAULT_CONFIG.bevelRadius!);
+    this.mesh.add(this.outlineMesh);
     
     // Cannon.js body - keep simple box for physics (no rounded corners)
     const halfSize = Dice.BASE_SIZE / 2;
@@ -164,6 +178,9 @@ export class Dice {
       
       this.mesh.geometry = newGeometry;
       oldGeometry.dispose();
+
+      // Keep the selection outline shell sized to the new dice geometry.
+      this.rebuildOutlineMesh(bevelRadius ?? DEFAULT_CONFIG.bevelRadius!);
     }
     
     // Try to get materials from cache
@@ -554,5 +571,47 @@ export class Dice {
   // Get current dice configuration
   getConfig(): DiceConfig {
     return { ...this.config };
+  }
+
+  // Build the selection-outline shell. The outline sits as a child of the
+  // dice mesh so it inherits all transforms automatically; it renders a
+  // back-facing, slightly inflated copy of the dice in a flat gold colour
+  // so only a rim is visible around the silhouette. depthWrite is off so
+  // it doesn't fight with the dice's own depth.
+  private buildOutlineMesh(bevelRadius: number): THREE.Mesh {
+    const size = Dice.getSizeForBevel(bevelRadius) * OUTLINE_SCALE;
+    const geometry = new RoundedBoxGeometry(size, size, size, 1, bevelRadius);
+    const material = new THREE.MeshBasicMaterial({
+      color: OUTLINE_COLOR,
+      side: THREE.BackSide,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.visible = this.selected;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    return mesh;
+  }
+
+  // Recreate the outline when the dice's own bevel radius changes (the
+  // existing outline geometry no longer matches the new dice silhouette).
+  private rebuildOutlineMesh(bevelRadius: number): void {
+    const oldGeometry = this.outlineMesh.geometry;
+    const size = Dice.getSizeForBevel(bevelRadius) * OUTLINE_SCALE;
+    this.outlineMesh.geometry = new RoundedBoxGeometry(size, size, size, 1, bevelRadius);
+    oldGeometry.dispose();
+  }
+
+  // Show / hide the selection outline for this die.
+  setSelected(selected: boolean): void {
+    this.selected = selected;
+    this.outlineMesh.visible = selected;
+  }
+
+  isSelected(): boolean {
+    return this.selected;
   }
 }

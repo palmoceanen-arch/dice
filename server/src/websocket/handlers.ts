@@ -23,6 +23,26 @@ import { validateRoll } from '../utils/anti-fraud.js';
 // Key: lobbyId, Value: Map of playerId -> last frame data
 const lastFrameStorage = new Map<string, Map<number, any>>();
 
+// Tracks the throw currently being streamed for each lobby. When a player
+// reconnects mid-throw we replay a synthesized `throw_start` from this
+// state so the dice on their screen pick up the opponent's skin and join
+// the in-flight replay instead of staying frozen in their own default
+// configuration.
+interface ActiveThrowState {
+  playerId: number;
+  playerNickname: string;
+  throwPower: number;
+  effectId: number | null;
+  equippedDiceId: number | null | undefined;
+  diceConfig: Record<string, unknown> | null;
+  selectedDice?: number[];
+  startedAt: number;
+}
+const activeThrows = new Map<string, ActiveThrowState>();
+// Throws older than this are assumed to have ended without a `throw_end`
+// (player crashed, network died, etc.) and won't be replayed on reconnect.
+const ACTIVE_THROW_MAX_AGE_MS = 30_000;
+
 // Message is already validated by server.ts, so we receive typed data
 export async function handleMessage(ws: WebSocket, message: any, userId: number | null): Promise<number | null> {
   // Auth message - no userId required
@@ -1013,25 +1033,23 @@ async function handleLeaveLobby(userId: number): Promise<void> {
     connections.send(userId, { type: 'error', message: 'Not in a lobby' });
     return;
   }
-  
+
   const lobbyId = conn.lobbyId;
-  
+
   // Get pending invitation users before leaving (to notify them if lobby closes)
   const pendingInviteUsers = await lobby.getPendingInvitationUsers(lobbyId);
-  
-  await lobby.leaveLobby(lobbyId, userId);
-  
+
+  const leaveResult = await lobby.leaveLobby(lobbyId, userId);
+
   // Get updated pips balance
   const newPips = await getUserPips(userId);
-  
-  connections.send(userId, { 
+
+  connections.send(userId, {
     type: 'lobby_left',
-    newPips 
+    newPips
   });
-  
-  // Check if lobby was closed (no players left)
-  const lobbyData = await lobby.getLobby(lobbyId);
-  if (!lobbyData || lobbyData.status === 'finished') {
+
+  if (leaveResult.closed) {
     // Notify all users with pending invitations that the lobby was closed
     for (const invitedUserId of pendingInviteUsers) {
       connections.send(invitedUserId, {
@@ -1039,14 +1057,32 @@ async function handleLeaveLobby(userId: number): Promise<void> {
         lobbyId,
       });
     }
+
+    // Any active throw belonging to this lobby is now meaningless.
+    activeThrows.delete(lobbyId);
   }
-  
-  // Notify other players
-  broadcastToLobby(lobbyId, {
-    type: 'player_left',
-    oderId: userId,
-  }, userId);
-  
+
+  if (leaveResult.closedReason === 'insufficient_players') {
+    // The game was in progress and this player's leave dropped the lobby
+    // below the playable threshold. Tell the remaining player(s) the game
+    // is over so their UI exits the in-game state instead of waiting on a
+    // turn that will never come.
+    for (const remainingUserId of leaveResult.remainingPlayers) {
+      connections.send(remainingUserId, {
+        type: 'game_ended_by_disconnect',
+        oderId: userId,
+        reason: 'opponent_left',
+      });
+    }
+  } else {
+    // Lobby still alive (or never had >1 player to begin with) — tell
+    // the rest of the lobby that this player is gone so their UI updates.
+    broadcastToLobby(lobbyId, {
+      type: 'player_left',
+      oderId: userId,
+    }, userId);
+  }
+
   // Notify friends that user is back online (not in lobby anymore)
   notifyFriendsStatusChanged(userId, 'online');
 }
@@ -1187,13 +1223,37 @@ async function handleReconnectGame(userId: number, lobbyId: string): Promise<voi
   // Notify other players that this player reconnected
   const player = lobbyData.players.find(p => p.oderId === userId);
   const playerNickname = player?.user?.nickname || 'Player';
-  
+
   broadcastToLobby(lobbyId, {
     type: 'player_reconnected',
     oderId: userId,
     nickname: playerNickname,
   }, userId);
-  
+
+  // If another player was mid-throw when this player reconnected, replay
+  // a synthesized `throw_start` to them so their client picks up the
+  // opponent's dice skin and joins the in-flight streaming replay. We
+  // skip it when the reconnecting player IS the thrower (they own the
+  // throw locally) or when the throw is older than ACTIVE_THROW_MAX_AGE_MS
+  // (the original thrower probably crashed and never sent throw_end).
+  const active = activeThrows.get(lobbyId);
+  if (
+    active &&
+    active.playerId !== userId &&
+    Date.now() - active.startedAt < ACTIVE_THROW_MAX_AGE_MS
+  ) {
+    connections.send(userId, {
+      type: 'throw_start',
+      playerId: active.playerId,
+      playerNickname: active.playerNickname,
+      throwPower: active.throwPower,
+      effectId: active.effectId,
+      equippedDiceId: active.equippedDiceId,
+      diceConfig: active.diceConfig,
+      selectedDice: active.selectedDice,
+    });
+  }
+
   console.log(`[Game] Player ${userId} reconnected to game ${lobbyId}`);
 }
 
@@ -1675,6 +1735,20 @@ async function handleThrowStart(userId: number, throwPower: number, effectId: nu
     diceConfig,
     selectedDice // Pass selected dice for Palmo's Dice rerolls
   }, userId);
+
+  // Remember this throw so a player who reconnects mid-flight gets the
+  // same throw_start as everyone else (otherwise they sit there with
+  // their own default dice config and never join the replay).
+  activeThrows.set(conn.lobbyId, {
+    playerId: userId,
+    playerNickname: user.nickname,
+    throwPower,
+    effectId,
+    equippedDiceId: equippedDiceIdForBroadcast,
+    diceConfig,
+    selectedDice,
+    startedAt: Date.now(),
+  });
 }
 
 async function handleThrowFrame(userId: number, frame: any): Promise<void> {
@@ -1750,7 +1824,14 @@ async function handleThrowEnd(userId: number, finalResult: { dice1: number; dice
     playerId: userId,
     finalResult
   }, userId);
-  
+
+  // Throw is over — drop the active-throw record so a later reconnect
+  // doesn't replay a stale start.
+  const active = activeThrows.get(conn.lobbyId);
+  if (active && active.playerId === userId) {
+    activeThrows.delete(conn.lobbyId);
+  }
+
   // For game logic that needs full lobby data, load it only if needed
   const needsFullLobbyData = lobbyStatus.gameMode !== 'free_roll';
   

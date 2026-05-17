@@ -597,10 +597,28 @@ export class GameSync {
     wsClient.on('lobby_left', () => {
       this.resetToSoloMode();
     });
-    
+
     // Game ended by other player disconnect
     wsClient.on('game_ended_by_disconnect', () => {
       this.resetToSoloMode();
+    });
+
+    // Surface mid-game disconnects to the player still in the lobby. The
+    // server broadcasts this whenever an opponent's WebSocket drops while
+    // they were still inGame; the Telegram MultiplayerUI shows the same
+    // toast (see src/ui/MultiplayerUI.ts) but the Yandex build lazy-mounts
+    // its lobby UI so we route the notification through GameSync, which
+    // is mounted from `main` in both builds.
+    wsClient.on('player_disconnected', (data: any) => {
+      if (!data || data.oderId === wsClient.user?.id) return;
+      const nickname = this.getPlayerNickname(data.oderId) || data.nickname || 'Игрок';
+      this.showNotification(`${nickname} отключился, ожидание переподключения…`);
+    });
+
+    wsClient.on('player_reconnected', (data: any) => {
+      if (!data || data.oderId === wsClient.user?.id) return;
+      const nickname = this.getPlayerNickname(data.oderId) || data.nickname || 'Игрок';
+      this.showNotification(`${nickname} переподключился`);
     });
   }
   
