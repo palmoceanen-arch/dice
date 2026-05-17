@@ -2666,8 +2666,8 @@ export class Game {
   
   // Teleport dice to another player's hand position with their config.
   // Called by GameSync on reconnect / turn change when it's not our turn.
-  public teleportDiceToNextPlayer(playerId: number) {
-    (window as any).debugLog?.('DICE', `teleportDiceToNextPlayer: playerId=${playerId}`);
+  public teleportDiceToNextPlayer(playerId: number, animate: boolean = true) {
+    (window as any).debugLog?.('DICE', `teleportDiceToNextPlayer: playerId=${playerId}, animate=${animate}`);
     const diceSync = this.diceSync;
     if (!diceSync) return;
 
@@ -2675,7 +2675,7 @@ export class Game {
     const playerConfig = this.gameSync.getPlayerDiceConfig(playerId);
 
     this.diceInHand = false;
-    diceSync.teleportDiceToHand(handPositions, playerConfig ?? undefined, true);
+    diceSync.teleportDiceToHand(handPositions, playerConfig ?? undefined, animate);
   }
 
   // Public method to get hand positions for dice
