@@ -2770,6 +2770,32 @@ export class Game {
     }
   }
   
+  // Re-skin the dice with another player's config and park them
+  // off-screen until the next `throw_start` repositions everything.
+  //
+  // Used after a Palmo's Dice reconnect when it's not our turn, and
+  // after a take/bust transition to a different player. Without this
+  // the spectator sees the previous shooter's colours (or the local
+  // default skin) on the dice until the next throw replay starts.
+  public teleportDiceToNextPlayer(playerId: number) {
+    const config = this.gameSync.getPlayerDiceConfig(playerId);
+    if (config) {
+      this.dice.forEach((d) =>
+        d.updateConfig(config, this.graphicsSettings.diceBevelSegments),
+      );
+      (window as any).debugLog?.(
+        'GAME',
+        `teleportDiceToNextPlayer: applied config for player ${playerId}`,
+      );
+    } else {
+      (window as any).debugLog?.(
+        'GAME',
+        `teleportDiceToNextPlayer: no config for player ${playerId}, keeping current skin`,
+      );
+    }
+    this.hideDice();
+  }
+
   // Hide dice when it's not our turn (move off-screen)
   private hideDice() {
     this.diceInHand = false;

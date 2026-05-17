@@ -2055,8 +2055,10 @@ export class GameSync {
     return this.gameState.gameMode;
   }
   
-  // Get dice config for a specific player (preloaded or from lobby)
-  private getPlayerDiceConfig(playerId: number): any | null {
+  // Get dice config for a specific player (preloaded or from lobby).
+  // Public so Game can re-skin the dice when teleporting them to the
+  // active player's slot on reconnect / turn change.
+  public getPlayerDiceConfig(playerId: number): any | null {
     (window as any).debugLog?.('DICE', `getPlayerDiceConfig(${playerId}) called`);
     
     // First try preloaded config (faster)
