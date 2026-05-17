@@ -1112,68 +1112,15 @@ async function handleReconnectGame(userId: number, lobbyId: string): Promise<voi
     return;
   }
   
-  // Collect all equipped items from all players for client-side preloading
-  const availableItems: any[] = [];
-  const seenItemIds = new Set<number>();
-  
-  for (const player of lobbyData.players) {
-    // Add dice
-    if (player.user.equippedDiceId && !seenItemIds.has(player.user.equippedDiceId)) {
-      seenItemIds.add(player.user.equippedDiceId);
-      const diceResult = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
-        'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
-        [player.user.equippedDiceId]
-      );
-      if (diceResult.rows[0]) {
-        const row = diceResult.rows[0];
-        availableItems.push({
-          id: row.id,
-          type: row.type,
-          code: row.code,
-          name: row.name,
-          config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-        });
-      }
-    }
-    
-    // Add table
-    if (player.user.equippedTableId && !seenItemIds.has(player.user.equippedTableId)) {
-      seenItemIds.add(player.user.equippedTableId);
-      const tableResult = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
-        'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
-        [player.user.equippedTableId]
-      );
-      if (tableResult.rows[0]) {
-        const row = tableResult.rows[0];
-        availableItems.push({
-          id: row.id,
-          type: row.type,
-          code: row.code,
-          name: row.name,
-          config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-        });
-      }
-    }
-    
-    // Add effect
-    if (player.user.equippedEffectId && !seenItemIds.has(player.user.equippedEffectId)) {
-      seenItemIds.add(player.user.equippedEffectId);
-      const effectResult = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
-        'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
-        [player.user.equippedEffectId]
-      );
-      if (effectResult.rows[0]) {
-        const row = effectResult.rows[0];
-        availableItems.push({
-          id: row.id,
-          type: row.type,
-          code: row.code,
-          name: row.name,
-          config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-        });
-      }
-    }
-  }
+  // Collect all equipped items (DB-backed and client-supplied) so the
+  // reconnecting client can preload every other player's dice / table /
+  // effect config. This is the same logic used in handleStartGame —
+  // without it, Yandex Cloud Save overrides are lost on reconnect and
+  // the opponent's dice appear with wrong textures.
+  const { availableItems, equipOverrides } = await buildAvailableItemsAndOverrides(
+    lobbyData.players,
+  );
+  applyEquipOverridesToLobby(lobbyData, equipOverrides);
   
   // Send game state to reconnected player
   // Extract mode-specific state
@@ -1444,8 +1391,8 @@ async function handleRestartGame(userId: number): Promise<void> {
   }
 
   const lobbyData = await lobby.getLobby(conn.lobbyId);
-  if (!lobbyData || lobbyData.hostId !== userId) {
-    connections.send(userId, { type: 'error', message: 'Only host can restart the game' });
+  if (!lobbyData) {
+    connections.send(userId, { type: 'error', message: 'Lobby not found' });
     return;
   }
 

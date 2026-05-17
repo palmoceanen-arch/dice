@@ -346,7 +346,7 @@ export class GameSync {
           // Not my turn - teleport dice to current player's position
           // They will be on the table waiting for their action
           (window as any).debugLog?.('GAME', `Palmo's Dice reconnect: Not my turn, teleporting to player ${data.currentTurn}`);
-          this.game.teleportDiceToNextPlayer(data.currentTurn);
+          this.game.teleportDiceToNextPlayer(data.currentTurn, false);
           
           // If a throw starts, we'll automatically join the replay via throw_start event
         }
@@ -1776,16 +1776,14 @@ export class GameSync {
       font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     `;
 
-    if (wsClient.isHost) {
-      const newGameBtn = document.createElement('button');
-      newGameBtn.textContent = 'New Game';
-      newGameBtn.style.cssText = baseBtn + 'background: #4CAF50;';
-      newGameBtn.addEventListener('click', () => {
-        resultEl.remove();
-        wsClient.restartGame();
-      });
-      container.appendChild(newGameBtn);
-    }
+    const newGameBtn = document.createElement('button');
+    newGameBtn.textContent = 'New Game';
+    newGameBtn.style.cssText = baseBtn + 'background: #4CAF50;';
+    newGameBtn.addEventListener('click', () => {
+      resultEl.remove();
+      wsClient.restartGame();
+    });
+    container.appendChild(newGameBtn);
 
     const exitBtn = document.createElement('button');
     exitBtn.textContent = 'Exit';
@@ -1966,7 +1964,7 @@ export class GameSync {
   }
   
   // Get dice config for a specific player (preloaded or from lobby)
-  private getPlayerDiceConfig(playerId: number): any | null {
+  public getPlayerDiceConfig(playerId: number): any | null {
     (window as any).debugLog?.('DICE', `getPlayerDiceConfig(${playerId}) called`);
     
     // First try preloaded config (faster)
