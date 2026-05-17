@@ -57,20 +57,24 @@ function mergeDiceConfig(input: DiceConfig): DiceConfig {
   return merged;
 }
 
-// Selection outline color (Palmo's Dice reroll selection).
+// Selection outline (Palmo's Dice reroll selection): rendered as a thin
+// wireframe frame around the die so the body of the dice stays visible.
+// `depthTest=false` keeps it readable through the table and other dice.
 const OUTLINE_COLOR = 0xFFD700;
-const OUTLINE_SCALE = 1.08;
+const OUTLINE_SCALE = 1.04;
 
 export class Dice {
   mesh: THREE.Mesh;
   body: CANNON.Body;
   private config: DiceConfig;
-  // Glow-outline child mesh used to highlight per-die selection (Palmo's
-  // Dice reroll). Hidden by default. We use a slightly larger, back-face
-  // rendered shell so the dice's own materials (which are pooled in
-  // `Dice.materialCache` and therefore shared across instances) stay
-  // untouched — toggling selection on one die does not bleed into others.
-  private outlineMesh: THREE.Mesh;
+  // Wireframe outline used to highlight per-die selection (Palmo's Dice
+  // reroll). Hidden by default. We use 12 line-segments around a slightly
+  // inflated cube so the die's surface stays visible — only a thin gold
+  // frame is drawn. The dice's own materials are pooled in
+  // `Dice.materialCache` and shared across instances, so we can't tint
+  // the dice itself without bleeding into siblings; a per-instance child
+  // outline keeps the highlight isolated.
+  private outlineMesh: THREE.LineSegments;
   private selected = false;
 
   // Interpolation state
@@ -573,37 +577,43 @@ export class Dice {
     return { ...this.config };
   }
 
-  // Build the selection-outline shell. The outline sits as a child of the
-  // dice mesh so it inherits all transforms automatically; it renders a
-  // back-facing, slightly inflated copy of the dice in a flat gold colour
-  // so only a rim is visible around the silhouette. depthWrite is off so
-  // it doesn't fight with the dice's own depth.
-  private buildOutlineMesh(bevelRadius: number): THREE.Mesh {
-    const size = Dice.getSizeForBevel(bevelRadius) * OUTLINE_SCALE;
-    const geometry = new RoundedBoxGeometry(size, size, size, 1, bevelRadius);
-    const material = new THREE.MeshBasicMaterial({
+  // Build the selection-outline frame. The outline sits as a child of the
+  // dice mesh so it inherits all transforms automatically. We use a plain
+  // (non-rounded) box's EdgesGeometry rendered as line segments — that
+  // gives the classic 12-edge wireframe cube around the die without
+  // filling the silhouette. depthTest is off + renderOrder high so the
+  // frame stays visible through the table and other dice.
+  private buildOutlineMesh(_bevelRadius: number): THREE.LineSegments {
+    const size = Dice.BASE_SIZE * OUTLINE_SCALE;
+    const boxGeometry = new THREE.BoxGeometry(size, size, size);
+    const geometry = new THREE.EdgesGeometry(boxGeometry);
+    boxGeometry.dispose();
+    const material = new THREE.LineBasicMaterial({
       color: OUTLINE_COLOR,
-      side: THREE.BackSide,
       transparent: true,
-      opacity: 0.95,
+      opacity: 1,
       depthWrite: false,
       depthTest: false,
       toneMapped: false,
     });
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.visible = this.selected;
-    mesh.renderOrder = 999;
-    mesh.castShadow = false;
-    mesh.receiveShadow = false;
-    return mesh;
+    const lines = new THREE.LineSegments(geometry, material);
+    lines.visible = this.selected;
+    lines.renderOrder = 999;
+    lines.castShadow = false;
+    lines.receiveShadow = false;
+    return lines;
   }
 
-  // Recreate the outline when the dice's own bevel radius changes (the
-  // existing outline geometry no longer matches the new dice silhouette).
-  private rebuildOutlineMesh(bevelRadius: number): void {
+  // Recreate the outline when the dice's own bevel radius changes. The
+  // outline geometry uses the dice's base size, not the bevel-compensated
+  // size, so it stays a clean cube wireframe — but we still rebuild it
+  // here for parity with the old code path / future tweaks.
+  private rebuildOutlineMesh(_bevelRadius: number): void {
     const oldGeometry = this.outlineMesh.geometry;
-    const size = Dice.getSizeForBevel(bevelRadius) * OUTLINE_SCALE;
-    this.outlineMesh.geometry = new RoundedBoxGeometry(size, size, size, 1, bevelRadius);
+    const size = Dice.BASE_SIZE * OUTLINE_SCALE;
+    const boxGeometry = new THREE.BoxGeometry(size, size, size);
+    this.outlineMesh.geometry = new THREE.EdgesGeometry(boxGeometry);
+    boxGeometry.dispose();
     oldGeometry.dispose();
   }
 

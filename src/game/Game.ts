@@ -3389,24 +3389,14 @@ export class Game {
     return this.selectedDiceForReroll.size > 0;
   }
   
-  // Show which dice another player selected for reroll (visual feedback)
+  // Show which dice another player selected for reroll. We deliberately
+  // do NOT highlight those dice on the remote viewer — that visual flash
+  // was always wiped a frame or two later by `clearDiceSelection()` in
+  // the `throw_start` handler, so the viewer saw the outline appear and
+  // immediately disappear right before the replay started. The text
+  // notification is enough to communicate intent.
   public showOtherPlayerDiceSelection(selectedIndices: number[]) {
-    (window as any).debugLog?.('PALMOS', `Showing other player's selection: [${selectedIndices.join(',')}]`);
-
-    // Clear any existing selection first
-    this.clearDiceSelection();
-
-    // Highlight only the dice the other player picked. We do NOT update
-    // `selectedDiceForReroll` because that set tracks the local player's
-    // own selection; the remote highlight is purely visual and is wiped
-    // by the next `throw_start` / `clearDiceSelection`.
-    selectedIndices.forEach(index => {
-      if (index >= 0 && index < this.dice.length) {
-        this.setDiceHighlight(index, true);
-      }
-    });
-    
-    // Show notification
+    (window as any).debugLog?.('PALMOS', `Showing other player's selection (notify only): [${selectedIndices.join(',')}]`);
     this.showNotification(`Выбрано кубиков для переброса: ${selectedIndices.length}`);
   }
   
