@@ -2,6 +2,7 @@
 
 import { en } from './locales/en';
 import { ru } from './locales/ru';
+import { detectPlatformLanguage } from './platformLang';
 import type { Language, TranslationParams, Translations } from './types';
 
 const translations = {
@@ -21,20 +22,19 @@ const listeners: LanguageChangeListener[] = [];
 export function initI18n(): Language {
   // Try to get language from localStorage
   const savedLang = localStorage.getItem('language') as Language | null;
-  
+
   if (savedLang && (savedLang === 'en' || savedLang === 'ru')) {
     currentLanguage = savedLang;
     return currentLanguage;
   }
 
-  // Try to detect from Telegram
-  if (typeof window !== 'undefined' && window.Telegram?.WebApp) {
-    const tgLang = window.Telegram.WebApp.initDataUnsafe?.user?.language_code;
-    if (tgLang === 'ru') {
-      currentLanguage = 'ru';
-      localStorage.setItem('language', 'ru');
-      return currentLanguage;
-    }
+  // Platform-specific language hint (Telegram user lang / navigator.language
+  // depending on which build is running).
+  const platformLang = detectPlatformLanguage();
+  if (platformLang) {
+    currentLanguage = platformLang;
+    localStorage.setItem('language', platformLang);
+    return currentLanguage;
   }
 
   // Default to English

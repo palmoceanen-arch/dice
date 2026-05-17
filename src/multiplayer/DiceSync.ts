@@ -101,7 +101,6 @@ export class DiceSync {
   
   // Cancel any ongoing animations (simplified - no more complex animation states)
   public cancelAnimations() {
-    console.log('[DiceSync] Cancelling all animations');
     // Nothing to cancel anymore - we removed all complex animations
   }
   
@@ -128,19 +127,14 @@ export class DiceSync {
   // Restore original dice config (called when not our turn after replay)
   restoreOriginalDiceConfig() {
     if (this.originalDiceConfig) {
-      console.log('[DiceSync] Restoring original dice config');
       this.dice.forEach(dice => dice.updateConfig(this.originalDiceConfig!));
     }
   }
   
   // Reset state when leaving game (unlock colors, restore original config)
   resetForSoloMode() {
-    console.log('[DiceSync] ========== RESET FOR SOLO MODE ==========');
-    console.log('[DiceSync] Resetting for solo mode');
-    
     // Stop recording if active
     if (this.isRecording) {
-      console.log('[DiceSync] Stopping recording for solo mode');
       this.isRecording = false;
       if (this.recordInterval) {
         clearInterval(this.recordInterval);
@@ -154,7 +148,6 @@ export class DiceSync {
     
     // Reset dice count to 2 for solo mode BEFORE restoring config
     if (this.game) {
-      console.log('[DiceSync] Resetting dice count to 2');
       this.game.setDiceCount(2);
     }
     
@@ -170,14 +163,11 @@ export class DiceSync {
     const lastConfigStr = this.lastAppliedReplayConfig ? JSON.stringify(this.lastAppliedReplayConfig) : null;
     
     if (configStr !== lastConfigStr) {
-      console.log('[DiceSync] Preloading dice config:', config);
       this.dice.forEach(dice => dice.updateConfig(config));
       this.lastAppliedReplayConfig = config;
       const elapsed = performance.now() - startTime;
-      console.log('[DiceSync] Preload took:', elapsed, 'ms');
       (window as any).debugLog?.('PERF', `Preload config: ${elapsed.toFixed(1)}ms`);
     } else {
-      console.log('[DiceSync] Config already loaded, skipping preload');
       (window as any).debugLog?.('PERF', 'Config cached, skipped');
     }
   }
@@ -186,7 +176,6 @@ export class DiceSync {
   startRecordingStream(throwPower: number, effectId: number | null, selectedDice?: number[]) {
     if (this.isRecording) return;
     
-    console.log('[DiceSync] Starting streaming recording, selectedDice:', selectedDice);
     (window as any).debugLog?.('STREAM', 'Recording started');
     
     this.isRecording = true;
@@ -239,7 +228,6 @@ export class DiceSync {
   
   // Stop recording and send final result with backup data
   stopRecordingStream(sendThrowEnd: boolean = true): { dice1: number; dice2: number; total: number } {
-    console.log('[DiceSync] Stopping streaming recording, sendThrowEnd:', sendThrowEnd);
     
     this.isRecording = false;
     if (this.recordInterval) {
@@ -256,39 +244,31 @@ export class DiceSync {
     const dice2Value = diceValues[1] || 0;
     const total = diceValues.reduce((sum, val) => sum + val, 0);
     
-    console.log('[DiceSync] Final dice values:', diceValues, 'total:', total);
     (window as any).debugLog?.('STREAM', `Recording stopped, sent frames, result: ${diceValues.join('+')}=${total}`);
     
     // Send throw_end only if requested (not for Stop/Pass)
     if (sendThrowEnd) {
-      console.log('[DiceSync] Sending throw_end with diceValues:', diceValues);
       wsClient.throwEnd({ 
         dice1: dice1Value, 
         dice2: dice2Value, 
         total,
         diceValues: diceValues // Always send all dice values
       });
-    } else {
-      // Don't send throw_end for Stop/Pass - observers will stop replay when they get greedy_pig_result
-      console.log('[DiceSync] Skipping throw_end (Stop/Pass)');
     }
+    // Otherwise: don't send throw_end for Stop/Pass — observers will stop
+    // replay when they get greedy_pig_result.
     
     return { dice1: dice1Value, dice2: dice2Value, total, diceValues };
   }
 
   // Start streaming replay when throw_start received
   startStreamingReplay(data: StreamingThrowData) {
-    console.log(`[DiceSync] startStreamingReplay called, isReplaying=${this.isReplaying}, player=${data.playerNickname}`);
-    
     if (this.isReplaying) {
-      console.warn('[DiceSync] Already replaying, FORCE FINISHING current replay before starting new one');
+      console.warn('[DiceSync] Already replaying, force-finishing current replay');
       (window as any).debugLog?.('STREAM', 'Force finishing current replay');
-      
-      // Force finish current replay immediately
       this.finishStreamingReplay();
     }
     
-    console.log(`[DiceSync] Starting streaming replay from ${data.playerNickname}, selectedDice:`, data.selectedDice);
     const startTime = performance.now();
     
     this.isReplaying = true;
@@ -310,26 +290,16 @@ export class DiceSync {
     
     (window as any).debugLog?.('STREAM', `Replay started for player ${data.playerId}`);
     
-    console.log('[DiceSync] Setup time:', performance.now() - startTime, 'ms');
-    const configStartTime = performance.now();
-    
-    // Apply dice config
+    // Apply dice config (skip if identical to the cached one).
     if (data.diceConfig) {
       const configStr = JSON.stringify(data.diceConfig);
       const lastConfigStr = this.lastAppliedReplayConfig ? JSON.stringify(this.lastAppliedReplayConfig) : null;
       
       if (configStr !== lastConfigStr) {
-        console.log('[DiceSync] Applying dice config:', data.diceConfig);
         this.dice.forEach(dice => dice.updateConfig(data.diceConfig!));
         this.lastAppliedReplayConfig = data.diceConfig;
-        const elapsed = performance.now() - configStartTime;
-        console.log('[DiceSync] Config update took:', elapsed, 'ms');
-      } else {
-        console.log('[DiceSync] Config already loaded, skipping');
       }
     }
-    
-    console.log('[DiceSync] Config check time:', performance.now() - configStartTime, 'ms');
     
     // Show player name indicator
     this.showPlayerIndicator(data.playerNickname);
@@ -343,23 +313,20 @@ export class DiceSync {
       triggerHaptic('light');
     }
     
-    // Set physics for dice during replay - all KINEMATIC
-    this.dice.forEach((dice, i) => {
+    // Set physics for dice during replay - all KINEMATIC.
+    this.dice.forEach(dice => {
       dice.body.type = CANNON.Body.KINEMATIC;
-      // Log current position before replay starts
-      console.log(`[DiceSync] Dice ${i} position before replay:`, dice.body.position.x.toFixed(2), dice.body.position.y.toFixed(2), dice.body.position.z.toFixed(2));
     });
     
-    // DON'T teleport dice to hand here - let the first frame position them
-    // This prevents the "jump" effect where dice teleport to hand then back to their actual position
-    console.log('[DiceSync] Waiting for first frames to position dice');
+    // DON'T teleport dice to hand here - let the first frame position them.
+    // This prevents the "jump" effect where dice teleport to hand then back
+    // to their actual position.
     
-    // Don't start replay timer yet - wait for first frames
-    // Timer will be set when we have enough frames in animateStreamingReplay
+    // Don't start replay timer yet - wait for first frames. Timer will be
+    // set when we have enough frames in animateStreamingReplay.
     this.replayStartTime = 0;
     
     const totalTime = performance.now() - startTime;
-    console.log('[DiceSync] Total startStreamingReplay time:', totalTime, 'ms');
     (window as any).debugLog?.('PERF', `Replay start: ${totalTime.toFixed(1)}ms`);
     
     // Start animation loop
@@ -396,10 +363,6 @@ export class DiceSync {
     // Just store it directly - no need to calculate wall clock time
     this.soundEvents.push({ type, velocity, time: soundTime });
     
-    // Log sound arrival for debugging
-    if (this.soundEvents.length === 1 || this.soundEvents.length % 5 === 0) {
-      console.log(`[DiceSync] Received ${this.soundEvents.length} sounds, latest at ${soundTime}ms`);
-    }
   }
   
   // End streaming replay
@@ -412,7 +375,6 @@ export class DiceSync {
     if (!this.isReplaying) return;
     
     const totalFrames = this.streamingFrames.reduce((sum, frames) => sum + frames.length, 0);
-    console.log('[DiceSync] Stream ended, final result:', data.diceValues || [data.dice1, data.dice2], 'total frames:', totalFrames);
     (window as any).debugLog?.('STREAM', `Stream ended, ${totalFrames} frames received`);
     
     // If we haven't started playback yet and have no frames, this is a problem
@@ -455,9 +417,7 @@ export class DiceSync {
     // Start timer on first frame batch
     if (this.replayStartTime === 0) {
       this.replayStartTime = Date.now();
-      
-      console.log('[DiceSync] Starting playback with', frameCount, 'frames buffered,', this.soundEvents.length, 'sounds ready, waited', waitTime, 'ms');
-      (window as any).debugLog?.('STREAM', `Playback started with ${this.soundEvents.length} sounds after ${waitTime}ms`);
+      (window as any).debugLog?.('STREAM', `Playback started: ${frameCount} frames, ${this.soundEvents.length} sounds, after ${waitTime}ms`);
     }
     
     const now = Date.now();
@@ -611,12 +571,6 @@ export class DiceSync {
       const quaternion = slerpQuaternion(frameA.quaternion, frameB.quaternion, t);
       
       const dice = this.dice[diceIndex];
-      
-      // Log first frame application
-      if (currentTime < 100 && Math.random() < 0.1) {
-        console.log(`[DiceSync] Dice ${diceIndex} first frame pos:`, position[0].toFixed(2), position[1].toFixed(2), position[2].toFixed(2));
-      }
-      
       dice.body.position.set(position[0], position[1], position[2]);
       dice.body.quaternion.set(quaternion[0], quaternion[1], quaternion[2], quaternion[3]);
       dice.updateDirect();
@@ -657,7 +611,6 @@ export class DiceSync {
   }
   
   private finishStreamingReplay() {
-    console.log('[DiceSync] finishStreamingReplay called, isReplaying:', this.isReplaying);
     (window as any).debugLog?.('STREAM', 'Finishing replay');
     
     if (this.replayAnimationId) {
@@ -685,8 +638,6 @@ export class DiceSync {
     this.streamingData = null;
     
     // Clear frames immediately to free memory
-    const frameCount = this.streamingFrames.reduce((sum, frames) => sum + frames.length, 0);
-    console.log('[DiceSync] Clearing', frameCount, 'frames from memory');
     this.streamingFrames = [];
     this.soundEvents = [];
     this.lastPlayedSoundIndex = -1;
@@ -702,7 +653,6 @@ export class DiceSync {
   
   // Teleport dice to hand position with smooth animation
   public teleportDiceToHand(targetPositions: { x: number; y: number; z: number }[], diceConfig?: any, animate: boolean = true) {
-    console.log('[DiceSync] Teleporting dice to hand, animate:', animate, 'config:', diceConfig ? 'provided' : 'none');
     (window as any).debugLog?.('DICE', `teleportDiceToHand: animate=${animate}, hasConfig=${!!diceConfig}`);
     
     // Apply dice config if provided, otherwise restore original (my) config
@@ -710,7 +660,6 @@ export class DiceSync {
       this.preloadDiceConfig(diceConfig);
     } else {
       // No config provided - restore my own config
-      console.log('[DiceSync] No config provided, restoring original');
       this.restoreOriginalDiceConfig();
     }
     
@@ -895,7 +844,6 @@ export class DiceSync {
   
   // Force stop replay (called when turn changes to us)
   public stopReplay() {
-    console.log('[DiceSync] Force stopping replay');
     if (this.isReplaying) {
       this.finishStreamingReplay();
     }

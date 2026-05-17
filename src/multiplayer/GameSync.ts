@@ -84,10 +84,7 @@ export class GameSync {
     // Game started
     wsClient.on('game_started', (data: any) => {
       (window as any).debugLog?.('GAME', '========== GAME STARTED ==========');
-      console.log('[GameSync] Game started:', data);
       (window as any).debugLog?.('GAME', `Players: ${data.lobby?.players?.length || 0}, Items: ${data.lobby?.availableItems?.length || 0}`);
-      console.log('[GameSync] Lobby players:', data.lobby?.players?.length || 0);
-      console.log('[GameSync] Available items:', data.lobby?.availableItems?.length || 0);
       
       // Remove any existing result popups (from previous game)
       const existingMexicoPopup = document.querySelector('[data-mexico-result]');
@@ -114,7 +111,6 @@ export class GameSync {
       
       // Set dice count based on game mode
       const diceCount = data.diceCount || this.getDiceCountForMode(this.gameState.gameMode);
-      console.log(`[GameSync] Setting dice count to ${diceCount} for mode ${this.gameState.gameMode}`);
       this.game.setDiceCount(diceCount);
       
       // Apply selected table from voting
@@ -127,8 +123,6 @@ export class GameSync {
       this.gameState.playerDiceConfigs.clear();
       
       (window as any).debugLog?.('GAME', `Starting preload, availableItems: ${data.lobby?.availableItems?.length || 0}, inventory: ${wsClient.inventory?.length || 0}`);
-      console.log('[GameSync] Starting config preload, availableItems:', data.lobby?.availableItems?.length || 0);
-      console.log('[GameSync] wsClient.inventory:', wsClient.inventory?.length || 0);
       
       if (data.lobby?.players) {
         for (const player of data.lobby.players) {
@@ -140,7 +134,6 @@ export class GameSync {
             // Preload dice config for this player (try both locations)
             const equippedDiceId = player.equippedDiceId || player.user?.equippedDiceId;
             (window as any).debugLog?.('GAME', `Player ${oderId} diceId: ${equippedDiceId}`);
-            console.log('[GameSync] Player', oderId, 'equippedDiceId:', equippedDiceId);
             
             if (equippedDiceId) {
               // Try availableItems first
@@ -148,14 +141,12 @@ export class GameSync {
               
               // Fallback to wsClient.inventory if availableItems is empty
               if (!diceConfig && wsClient.inventory) {
-                console.log('[GameSync] Trying wsClient.inventory as fallback');
                 diceConfig = this.getDiceConfigById(equippedDiceId, wsClient.inventory);
               }
               
               if (diceConfig) {
                 this.gameState.playerDiceConfigs.set(oderId, diceConfig);
                 (window as any).debugLog?.('GAME', `✓ Preloaded config for player ${oderId}`);
-                console.log('[GameSync] ✓ Preloaded dice config for player', oderId, 'diceId:', equippedDiceId);
               } else {
                 (window as any).debugLog?.('GAME', `✗ Failed to preload for player ${oderId}`);
                 console.warn('[GameSync] ✗ Failed to preload dice config for player', oderId, 'diceId:', equippedDiceId);
@@ -170,7 +161,6 @@ export class GameSync {
       }
       
       (window as any).debugLog?.('GAME', `Preload complete: ${this.gameState.playerDiceConfigs.size} configs loaded`);
-      console.log('[GameSync] Preload complete. Configs loaded:', this.gameState.playerDiceConfigs.size);
       
       // Apply synced wall width if provided
       if (data.minAspectRatio) {
@@ -226,11 +216,7 @@ export class GameSync {
     // Game reconnected (after disconnect)
     wsClient.on('game_reconnected', (data: any) => {
       (window as any).debugLog?.('GAME', '========== GAME RECONNECTED ==========');
-      console.log('[GameSync] Game reconnected:', data);
-      console.log('[GameSync] Received diceCount:', data.diceCount);
       (window as any).debugLog?.('GAME', `Players: ${data.lobby?.players?.length || 0}, Items: ${data.lobby?.availableItems?.length || 0}`);
-      console.log('[GameSync] Lobby players:', data.lobby?.players?.length || 0);
-      console.log('[GameSync] Available items:', data.lobby?.availableItems?.length || 0);
       
       // Reset dice state
       const diceSync = this.game.getDiceSync();
@@ -255,8 +241,6 @@ export class GameSync {
       this.gameState.playerDiceConfigs.clear();
       
       (window as any).debugLog?.('GAME', `Starting preload (reconnect), availableItems: ${data.lobby?.availableItems?.length || 0}, inventory: ${wsClient.inventory?.length || 0}`);
-      console.log('[GameSync] Starting config preload (reconnect), availableItems:', data.lobby?.availableItems?.length || 0);
-      console.log('[GameSync] wsClient.inventory:', wsClient.inventory?.length || 0);
       
       if (data.lobby?.players) {
         for (const player of data.lobby.players) {
@@ -268,7 +252,6 @@ export class GameSync {
             // Preload dice config for this player (try both locations)
             const equippedDiceId = player.equippedDiceId || player.user?.equippedDiceId;
             (window as any).debugLog?.('GAME', `Player ${oderId} diceId: ${equippedDiceId}`);
-            console.log('[GameSync] Player', oderId, 'equippedDiceId:', equippedDiceId);
             
             if (equippedDiceId) {
               // Try availableItems first
@@ -276,14 +259,12 @@ export class GameSync {
               
               // Fallback to wsClient.inventory if availableItems is empty
               if (!diceConfig && wsClient.inventory) {
-                console.log('[GameSync] Trying wsClient.inventory as fallback');
                 diceConfig = this.getDiceConfigById(equippedDiceId, wsClient.inventory);
               }
               
               if (diceConfig) {
                 this.gameState.playerDiceConfigs.set(oderId, diceConfig);
                 (window as any).debugLog?.('GAME', `✓ Preloaded config for player ${oderId}`);
-                console.log('[GameSync] ✓ Preloaded dice config for player', oderId, 'diceId:', equippedDiceId);
               } else {
                 (window as any).debugLog?.('GAME', `✗ Failed to preload for player ${oderId}`);
                 console.warn('[GameSync] ✗ Failed to preload dice config for player', oderId, 'diceId:', equippedDiceId);
@@ -298,11 +279,9 @@ export class GameSync {
       }
       
       (window as any).debugLog?.('GAME', `Preload complete (reconnect): ${this.gameState.playerDiceConfigs.size} configs loaded`);
-      console.log('[GameSync] Preload complete (reconnect). Configs loaded:', this.gameState.playerDiceConfigs.size);
       
       // Set dice count based on game mode BEFORE any dice operations
       const diceCount = data.diceCount || this.getDiceCountForMode(this.gameState.gameMode);
-      console.log(`[GameSync] Reconnect: Setting dice count to ${diceCount} for mode ${this.gameState.gameMode}`);
       
       // For Palmo's Dice with lastFrame, we'll restore positions manually, so skip auto-reset
       const skipAutoReset = this.gameState.gameMode === 'poker_dice' && data.lastFrame && data.currentRound;
@@ -384,7 +363,6 @@ export class GameSync {
     
     // Street Craps result
     wsClient.on('craps_result', (data: any) => {
-      console.log('[GameSync] Craps result:', data);
       this.gameState.phase = data.phase;
       this.gameState.pointValue = data.pointValue;
       
@@ -398,7 +376,6 @@ export class GameSync {
     
     // Mexico result
     wsClient.on('mexico_result', (data: any) => {
-      console.log('[GameSync] Mexico result:', data);
       
       // Update penalties
       if (data.data?.penalties) {
@@ -426,13 +403,11 @@ export class GameSync {
     
     // Greedy Pig result
     wsClient.on('greedy_pig_result', (data: any) => {
-      console.log('[GameSync] Greedy Pig result:', data);
       
       // If outcome is 'stop', force stop any ongoing replay (player stopped without throwing)
       if (data.outcome === 'stop') {
         const diceSync = this.game.getDiceSync();
         if (diceSync?.isCurrentlyReplaying()) {
-          console.log('[GameSync] Stopping replay - player stopped');
           diceSync.stopReplay();
         }
       }
@@ -477,13 +452,11 @@ export class GameSync {
     
     // Palmo's Dice result (from take action)
     wsClient.on('palmos_result', (data: any) => {
-      console.log('[GameSync] Palmos result:', data);
       this.handlePalmosResult(data);
     });
     
     // Poker Dice result (from roll - bust or autoTake)
     wsClient.on('poker_dice_result', (data: any) => {
-      console.log('[GameSync] Poker dice result:', data);
       this.handlePalmosResult(data);
     });
     
@@ -508,13 +481,11 @@ export class GameSync {
     
     // Game payouts (betting winnings)
     wsClient.on('game_payouts', (data: any) => {
-      console.log('[GameSync] Game payouts:', data);
       this.gameState.payouts = data.payouts;
     });
     
     // Dice rolled by another player (old system - keep for compatibility)
     wsClient.on('dice_rolled', (data: any) => {
-      console.log('[GameSync] Dice rolled (old):', data);
       
       // If it's our own roll, don't show it again
       if (data.playerId === wsClient.user?.id) return;
@@ -525,7 +496,6 @@ export class GameSync {
     
     // Streaming throw events
     wsClient.on('throw_start', (data: any) => {
-      console.log('[GameSync] Throw start from:', data.playerNickname, 'diceConfig:', data.diceConfig);
       
       // Skip own throws
       if (data.playerId === wsClient.user?.id) return;
@@ -569,7 +539,6 @@ export class GameSync {
     });
     
     wsClient.on('throw_end', (data: any) => {
-      console.log('[GameSync] Throw end from:', data.playerId);
       
       // Skip own throws
       if (data.playerId === wsClient.user?.id) return;
@@ -585,11 +554,9 @@ export class GameSync {
     
     // Synchronized dice throw (old batch system - keep for compatibility)
     wsClient.on('dice_throw_sync', (data: any) => {
-      console.log('[GameSync] Synchronized throw received:', JSON.stringify(data, null, 2));
       
       // If it's our own throw, don't replay it
       if (data.playerId === wsClient.user?.id) {
-        console.log('[GameSync] Skipping own throw');
         return;
       }
       
@@ -599,7 +566,6 @@ export class GameSync {
         return;
       }
       
-      console.log('[GameSync] Replaying throw from:', data.playerNickname);
       
       // Replay the throw with full synchronization (old method)
       // this.game.replayPlayerThrow(data.throwData);
@@ -607,7 +573,6 @@ export class GameSync {
     
     // Turn changed
     wsClient.on('turn_changed', (data: any) => {
-      console.log('[GameSync] Turn changed to:', data.playerId);
       this.gameState.currentTurn = data.playerId;
       this.updateTurnIndicator();
       this.updatePlayersList(); // Update player list to show new current turn
@@ -625,7 +590,6 @@ export class GameSync {
     
     // Turn passed
     wsClient.on('turn_passed', (data: any) => {
-      console.log('[GameSync] Turn passed from', data.fromPlayerId, 'to', data.toPlayerId);
       this.showNotification(`${this.getPlayerNickname(data.fromPlayerId)} passed`);
     });
     
@@ -633,15 +597,32 @@ export class GameSync {
     wsClient.on('lobby_left', () => {
       this.resetToSoloMode();
     });
-    
+
     // Game ended by other player disconnect
     wsClient.on('game_ended_by_disconnect', () => {
       this.resetToSoloMode();
     });
+
+    // Surface mid-game disconnects to the player still in the lobby. The
+    // server broadcasts this whenever an opponent's WebSocket drops while
+    // they were still inGame; the Telegram MultiplayerUI shows the same
+    // toast (see src/ui/MultiplayerUI.ts) but the Yandex build lazy-mounts
+    // its lobby UI so we route the notification through GameSync, which
+    // is mounted from `main` in both builds.
+    wsClient.on('player_disconnected', (data: any) => {
+      if (!data || data.oderId === wsClient.user?.id) return;
+      const nickname = this.getPlayerNickname(data.oderId) || data.nickname || 'Игрок';
+      this.showNotification(`${nickname} отключился, ожидание переподключения…`);
+    });
+
+    wsClient.on('player_reconnected', (data: any) => {
+      if (!data || data.oderId === wsClient.user?.id) return;
+      const nickname = this.getPlayerNickname(data.oderId) || data.nickname || 'Игрок';
+      this.showNotification(`${nickname} переподключился`);
+    });
   }
   
   private resetToSoloMode() {
-    console.log('[GameSync] ========== RESET TO SOLO MODE ==========');
     
     // Remove any existing result popups
     const existingMexicoPopup = document.querySelector('[data-mexico-result]');
@@ -658,7 +639,6 @@ export class GameSync {
     this.gameState.playerOrder = [];
     this.gameState.players.clear();
     this.gameState.playerDiceConfigs.clear();
-    console.log('[GameSync] Cleared playerDiceConfigs cache');
     this.gameState.phase = 'come_out';
     this.gameState.pointValue = null;
     this.gameState.mexicoPenalties = {};
@@ -829,13 +809,11 @@ export class GameSync {
     this.passButton?.addEventListener('click', () => {
       // Don't allow Pass while throw is in progress
       if (this.isThrowInProgress) {
-        console.log('[GameSync] Pass blocked - throw in progress');
         return;
       }
       
       // Only allow Pass while dice are in hand (before throw)
       if (!this.game.isDiceInHand()) {
-        console.log('[GameSync] Pass blocked - dice not in hand (already thrown)');
         return;
       }
       
@@ -859,17 +837,14 @@ export class GameSync {
     });
     
     this.stopButton?.addEventListener('click', () => {
-      console.log('[GameSync] Stop button clicked');
       
       // Don't allow Stop while throw is in progress
       if (this.isThrowInProgress) {
-        console.log('[GameSync] Stop blocked - throw in progress');
         return;
       }
       
       // Only allow Stop while dice are in hand (before throw)
       if (!this.game.isDiceInHand()) {
-        console.log('[GameSync] Stop blocked - dice not in hand (already thrown)');
         return;
       }
       
@@ -1058,7 +1033,6 @@ export class GameSync {
     const winners = data.winners;
     const gameOver = data.gameOver;
     
-    console.log('[GameSync] showMexicoResult - outcome:', outcome, 'gameOver:', gameOver, 'winners:', winners);
     
     let message = scoreName || data.message;
     let bgColor = 'rgba(255, 215, 0, 0.3)';
@@ -1121,45 +1095,18 @@ export class GameSync {
     `;
     
     resultEl.textContent = message;
-    
-    // Add New Game button for host if game is over
-    console.log('[GameSync] showMexicoResult - showNewGameButton:', showNewGameButton, 'isHost:', wsClient.isHost);
-    if (showNewGameButton && wsClient.isHost) {
-      const buttonContainer = document.createElement('div');
-      buttonContainer.style.marginTop = '16px';
-      
-      const newGameBtn = document.createElement('button');
-      newGameBtn.textContent = 'New Game';
-      newGameBtn.style.cssText = `
-        padding: 10px 24px;
-        background: #4CAF50;
-        border: none;
-        border-radius: 8px;
-        color: white;
-        font-size: 14px;
-        font-weight: 600;
-        cursor: pointer;
-        font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      `;
-      newGameBtn.addEventListener('click', () => {
-        resultEl.remove();
-        wsClient.restartGame();
-      });
-      
-      buttonContainer.appendChild(newGameBtn);
-      resultEl.appendChild(buttonContainer);
+
+    if (showNewGameButton) {
+      resultEl.appendChild(this.buildGameOverButtons(resultEl));
     }
-    
+
     document.body.appendChild(resultEl);
-    
-    // Click to close (for non-host players)
-    if (!showNewGameButton || !wsClient.isHost) {
+
+    // Mid-game results auto-dismiss and accept click-to-close. Game-over
+    // sticks until the player picks "New Game" / "Exit".
+    if (!showNewGameButton) {
       resultEl.style.cursor = 'pointer';
       resultEl.addEventListener('click', () => resultEl.remove());
-    }
-    
-    // Auto-remove after delay only if no button
-    if (!showNewGameButton) {
       setTimeout(() => resultEl.remove(), 3000);
     }
   }
@@ -1169,9 +1116,6 @@ export class GameSync {
     const { turnScore, scores, bankedScore, newTotal, lostTurnScore, lostTotalScore } = data.data || {};
     
     // Debug logging for payouts
-    console.log('[GameSync] showGreedyPigResult - payouts:', payouts);
-    console.log('[GameSync] showGreedyPigResult - winners:', winners);
-    console.log('[GameSync] showGreedyPigResult - gameOver:', gameOver);
     
     let displayMessage = message;
     let bgColor = 'rgba(255, 215, 0, 0.3)';
@@ -1208,7 +1152,6 @@ export class GameSync {
       // Check if there's a payout for the winner
       const payout = payouts?.[winners?.[0]];
       
-      console.log('[GameSync] Victory display - winnerId:', winners?.[0], 'payout:', payout);
       
       if (payout && payout > 0) {
         displayMessage = `🏆 ${winnerName} ${t('gameResults.wins')}\n${t('gameResults.score')}: ${winnerScore}\n💰 +${payout} pips`;
@@ -1251,48 +1194,24 @@ export class GameSync {
     `;
     
     resultEl.textContent = displayMessage;
-    
-    // Add New Game button for host if game is over
-    if (showNewGameButton && wsClient.isHost) {
-      const buttonContainer = document.createElement('div');
-      buttonContainer.style.marginTop = '16px';
-      
-      const newGameBtn = document.createElement('button');
-      newGameBtn.textContent = 'New Game';
-      newGameBtn.style.cssText = `
-        padding: 10px 24px;
-        background: #4CAF50;
-        border: none;
-        border-radius: 8px;
-        color: white;
-        font-size: 14px;
-        font-weight: 600;
-        cursor: pointer;
-        font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      `;
-      newGameBtn.addEventListener('click', () => {
-        resultEl.remove();
-        wsClient.restartGame();
-      });
-      
-      buttonContainer.appendChild(newGameBtn);
-      resultEl.appendChild(buttonContainer);
+
+    if (showNewGameButton) {
+      resultEl.appendChild(this.buildGameOverButtons(resultEl));
     }
-    
+
     document.body.appendChild(resultEl);
-    
-    // Click to close (for non-host players or non-game-over)
-    if (!showNewGameButton || !wsClient.isHost) {
+
+    // Mid-game results auto-dismiss and accept click-to-close. Game-over
+    // sticks until the player picks "New Game" / "Exit".
+    if (!showNewGameButton) {
       resultEl.style.cursor = 'pointer';
       resultEl.addEventListener('click', () => resultEl.remove());
+      if (autoRemove) {
+        const delay = outcome === 'roll' ? 1000 : 2500;
+        setTimeout(() => resultEl.remove(), delay);
+      }
     }
-    
-    // Auto-remove after delay
-    if (autoRemove) {
-      const delay = outcome === 'roll' ? 1000 : 2500;
-      setTimeout(() => resultEl.remove(), delay);
-    }
-    
+
     // Update turn indicator to show/hide Stop button
     this.updateTurnIndicator();
   }
@@ -1357,9 +1276,6 @@ export class GameSync {
     const { outcome, message, gameOver, winners, payouts, action } = data;
     const { hand, points, newScore, scores, bust, onesCount, autoTake } = data.data || {};
     
-    console.log('[GameSync] showPalmosResult - payouts:', payouts);
-    console.log('[GameSync] showPalmosResult - winners:', winners);
-    console.log('[GameSync] showPalmosResult - gameOver:', gameOver);
     
     let displayMessage = message;
     let bgColor = 'rgba(255, 215, 0, 0.3)';
@@ -1375,7 +1291,6 @@ export class GameSync {
       // Check if there's a payout for the winner
       const payout = payouts?.[winners?.[0]];
       
-      console.log('[GameSync] Victory display - winnerId:', winners?.[0], 'payout:', payout);
       
       if (payout && payout > 0) {
         displayMessage = `🏆 ${winnerName} ${t('gameResults.wins')}\n${t('gameResults.score')}: ${winnerScore}\n💰 +${payout} pips`;
@@ -1438,48 +1353,24 @@ export class GameSync {
     `;
     
     resultEl.textContent = displayMessage;
-    
-    // Add New Game button for host if game is over
-    if (showNewGameButton && wsClient.isHost) {
-      const buttonContainer = document.createElement('div');
-      buttonContainer.style.marginTop = '16px';
-      
-      const newGameBtn = document.createElement('button');
-      newGameBtn.textContent = 'New Game';
-      newGameBtn.style.cssText = `
-        padding: 10px 24px;
-        background: #4CAF50;
-        border: none;
-        border-radius: 8px;
-        color: white;
-        font-size: 14px;
-        font-weight: 600;
-        cursor: pointer;
-        font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      `;
-      newGameBtn.addEventListener('click', () => {
-        resultEl.remove();
-        wsClient.restartGame();
-      });
-      
-      buttonContainer.appendChild(newGameBtn);
-      resultEl.appendChild(buttonContainer);
+
+    if (showNewGameButton) {
+      resultEl.appendChild(this.buildGameOverButtons(resultEl));
     }
-    
+
     document.body.appendChild(resultEl);
-    
-    // Click to close (for non-host players or non-game-over)
-    if (!showNewGameButton || !wsClient.isHost) {
+
+    // Mid-game results auto-dismiss and accept click-to-close. Game-over
+    // sticks until the player picks "New Game" / "Exit".
+    if (!showNewGameButton) {
       resultEl.style.cursor = 'pointer';
       resultEl.addEventListener('click', () => resultEl.remove());
+      if (autoRemove) {
+        const delay = outcome === 'roll' ? 1500 : 2500;
+        setTimeout(() => resultEl.remove(), delay);
+      }
     }
-    
-    // Auto-remove after delay
-    if (autoRemove) {
-      const delay = outcome === 'roll' ? 1500 : 2500;
-      setTimeout(() => resultEl.remove(), delay);
-    }
-    
+
     // Update turn indicator to show/hide buttons
     this.updateTurnIndicator();
   }
@@ -1859,6 +1750,57 @@ export class GameSync {
     this.playersList.innerHTML = playersHtml;
   }
   
+  // Builds the "New Game" (host only) + "Exit" button row attached to a
+  // game-over result modal. Same UX in Mexico / Greedy Pig / Palmos: every
+  // player can leave the lobby and bounce back to the menu; only the host
+  // gets the restart button. Until the user picks one, the modal stays put
+  // so the result doesn't auto-dismiss.
+  private buildGameOverButtons(resultEl: HTMLElement): HTMLElement {
+    const container = document.createElement('div');
+    container.style.cssText = `
+      margin-top: 16px;
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+      flex-wrap: wrap;
+    `;
+
+    const baseBtn = `
+      padding: 10px 24px;
+      border: none;
+      border-radius: 8px;
+      color: white;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    `;
+
+    if (wsClient.isHost) {
+      const newGameBtn = document.createElement('button');
+      newGameBtn.textContent = 'New Game';
+      newGameBtn.style.cssText = baseBtn + 'background: #4CAF50;';
+      newGameBtn.addEventListener('click', () => {
+        resultEl.remove();
+        wsClient.restartGame();
+      });
+      container.appendChild(newGameBtn);
+    }
+
+    const exitBtn = document.createElement('button');
+    exitBtn.textContent = 'Exit';
+    exitBtn.style.cssText = baseBtn + 'background: rgba(255,255,255,0.15);';
+    exitBtn.addEventListener('click', () => {
+      resultEl.remove();
+      // `lobby_left` listener in setupEventListeners() will call
+      // resetToSoloMode() and return the UI to the lobby/menu.
+      wsClient.leaveLobby();
+    });
+    container.appendChild(exitBtn);
+
+    return container;
+  }
+
   private celebrateWinner() {
     // Запускаем конфетти с разных сторон
     const duration = 3000;
@@ -1950,12 +1892,10 @@ export class GameSync {
   private disableSoloControls() {
     // Disable the original game's shake detection and controls
     // The game should only respond to multiplayer events now
-    console.log('[GameSync] Solo controls disabled - multiplayer mode active');
   }
   
   private enableSoloControls() {
     // Re-enable solo game controls
-    console.log('[GameSync] Solo controls enabled - back to solo mode');
   }
   
   private showNotification(message: string) {
@@ -1985,7 +1925,6 @@ export class GameSync {
     
     const isMyTurn = this.gameState.currentTurn === wsClient.user?.id;
     if (!isMyTurn && this.gameState.gameMode === 'free_roll') {
-      console.log('[GameSync] Not your turn, ignoring roll');
       return;
     }
     
@@ -1999,7 +1938,6 @@ export class GameSync {
     
     const isMyTurn = this.gameState.currentTurn === wsClient.user?.id;
     if (!isMyTurn && this.gameState.gameMode === 'free_roll') {
-      console.log('[GameSync] Not your turn, ignoring throw');
       return;
     }
     
@@ -2057,7 +1995,6 @@ export class GameSync {
           if (multiplayerUI.currentLobby.availableItems) {
             const diceConfig = this.getDiceConfigById(equippedDiceId, multiplayerUI.currentLobby.availableItems);
             if (diceConfig) {
-              console.log('[GameSync] Found dice config from availableItems for player', playerId);
               // Cache it for next time
               this.gameState.playerDiceConfigs.set(playerId, diceConfig);
               return diceConfig;
@@ -2070,7 +2007,6 @@ export class GameSync {
           );
           
           if (diceItem?.config) {
-            console.log('[GameSync] Found dice config from inventory for player', playerId, ':', diceItem.config);
             // Cache it for next time
             this.gameState.playerDiceConfigs.set(playerId, diceItem.config);
             return diceItem.config;
@@ -2145,8 +2081,6 @@ export class GameSync {
   
   
   // Helper to get dice config by ID from available items
-  
-  // Helper to get dice config by ID from available items
   private getDiceConfigById(diceId: number, availableItems?: any[]): any | null {
     if (!availableItems) return null;
     
@@ -2156,20 +2090,37 @@ export class GameSync {
     
     if (!diceItem?.config) return null;
     
-    return {
+    // Build the config by copying only properties that are actually
+    // defined. We used to enumerate every supported field explicitly
+    // here, which meant fields the preset omits (e.g. classic_white has
+    // no `opacity` or `dotShape`) ended up as `opacity: undefined` in
+    // the returned object. When that config is later merged into the
+    // dice's `{ ...DEFAULT_CONFIG, ...config }`, the spread overwrites
+    // the defaults with `undefined`, producing THREE warnings and
+    // visually wrong dice (which appears to the user as "other
+    // players' textures don't show up").
+    const result: Record<string, unknown> = {
       baseColor: diceItem.config.baseColor || '#e5e5d7',
       dotColor: diceItem.config.dotColor || '#383838',
       borderColor: diceItem.config.borderColor || '#e5e5d7',
-      roughness: diceItem.config.roughness,
-      metalness: diceItem.config.metalness,
-      clearcoat: diceItem.config.clearcoat,
-      clearcoatRoughness: diceItem.config.clearcoatRoughness,
-      opacity: diceItem.config.opacity,
-      dotSize: diceItem.config.dotSize,
-      dotShape: diceItem.config.dotShape,
-      dotDepth: diceItem.config.dotDepth,
-      bevelRadius: diceItem.config.bevelRadius,
     };
+    const passthrough = [
+      'roughness',
+      'metalness',
+      'clearcoat',
+      'clearcoatRoughness',
+      'opacity',
+      'dotSize',
+      'dotShape',
+      'dotDepth',
+      'bevelRadius',
+    ];
+    for (const key of passthrough) {
+      if (diceItem.config[key] !== undefined) {
+        result[key] = diceItem.config[key];
+      }
+    }
+    return result;
   }
   
   private waitForReplayAndNotify(isMyTurn: boolean) {
@@ -2189,7 +2140,6 @@ export class GameSync {
     const isReplaying = diceSync.isCurrentlyReplaying();
     
     if (isReplaying) {
-      console.log('[GameSync] Waiting for replay to finish, isMyTurn:', isMyTurn);
       
       // Check every 100ms if replay is done
       this.replayWaitIntervalId = window.setInterval(() => {
@@ -2203,7 +2153,6 @@ export class GameSync {
             this.replayWaitTimeoutId = null;
           }
           
-          console.log('[GameSync] Replay finished, calling resetDiceForNextTurn');
           
           // Use universal reset method (will be skipped if already scheduled from game result)
           this.resetDiceForNextTurn(800);
@@ -2217,12 +2166,10 @@ export class GameSync {
           this.replayWaitIntervalId = null;
         }
         this.replayWaitTimeoutId = null;
-        console.log('[GameSync] Force ending wait after timeout');
         this.resetDiceForNextTurn(800);
       }, 5000);
     } else {
       // Not replaying - immediately reset
-      console.log('[GameSync] No replay in progress, calling resetDiceForNextTurn');
       this.resetDiceForNextTurn(800);
     }
   }
@@ -2237,7 +2184,6 @@ export class GameSync {
     
     // For Palmo's Dice, don't reset dice to hand - they stay on table for selection
     if (this.gameState.gameMode === 'poker_dice') {
-      console.log('[GameSync] Palmo\'s Dice mode - skipping dice reset (dice stay on table)');
       return;
     }
     
@@ -2263,7 +2209,6 @@ export class GameSync {
       
       if (isMyTurn) {
         // My turn - enable physics with my dice config
-        console.log('[GameSync] My turn - calling onTurnChanged(true)');
         (window as any).debugLog?.('DICE', 'My turn - resetting dice to hand');
         this.game.setDiceInHand(false);
         this.game.onTurnChanged(true);

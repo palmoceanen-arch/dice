@@ -13,6 +13,8 @@ interface LobbyRow {
   status: string;
   selected_table_id: number | null;
   max_players: number;
+  no_bet?: boolean | null;
+  bet_amount?: number | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -42,6 +44,10 @@ const activeLobbies = new Map<string, {
   status: 'voting' | 'playing' | 'finished';
   gameMode: GameMode;
   hostId: number;
+  // Snapshot of the lobby's `no_bet` flag so betting-flow checks don't have
+  // to hit the database during the start_game / endGame hot paths.
+  noBet: boolean;
+  betAmount: number;
 }>();
 
 // Cache dice configs to avoid DB queries during throws
@@ -96,29 +102,34 @@ export async function getDiceConfig(diceId: number): Promise<Record<string, unkn
   return config;
 }
 
-export async function createLobby(hostId: number, gameMode: GameMode): Promise<Lobby> {
+export async function createLobby(
+  hostId: number,
+  gameMode: GameMode,
+  noBet: boolean = false,
+  betAmount: number = noBet ? 0 : 10,
+): Promise<Lobby> {
   const id = nanoid(8);
-  
+
   const result = await query<LobbyRow>(
-    `INSERT INTO lobbies (id, host_id, game_mode, status, max_players)
-     VALUES ($1, $2, $3, 'voting', $4)
+    `INSERT INTO lobbies (id, host_id, game_mode, status, max_players, no_bet, bet_amount)
+     VALUES ($1, $2, $3, 'voting', $4, $5, $6)
      RETURNING *`,
-    [id, hostId, gameMode, MAX_PLAYERS]
+    [id, hostId, gameMode, MAX_PLAYERS, noBet, betAmount]
   );
-  
+
   // Add host as player
   await query(
     `INSERT INTO lobby_players (lobby_id, user_id, status)
      VALUES ($1, $2, 'joined')`,
     [id, hostId]
   );
-  
+
   // Update connection
   const conn = connections.getConnection(hostId);
   if (conn) {
     conn.lobbyId = id;
   }
-  
+
   // Init in-memory state
   activeLobbies.set(id, {
     players: new Set([hostId]),
@@ -127,9 +138,23 @@ export async function createLobby(hostId: number, gameMode: GameMode): Promise<L
     status: 'voting',
     gameMode,
     hostId,
+    noBet,
+    betAmount,
   });
-  
-  return mapLobby(result.rows[0]);
+
+  return mapLobby(result.rows[0], betAmount);
+}
+
+// Fast accessor for the no-bet flag, used by handleStartGame / endGame in
+// hot paths where we want to avoid an extra DB round-trip.
+export function isNoBetLobby(lobbyId: string): boolean {
+  const state = activeLobbies.get(lobbyId);
+  return !!state?.noBet;
+}
+
+export function getLobbyBetAmount(lobbyId: string): number {
+  const state = activeLobbies.get(lobbyId);
+  return state?.betAmount ?? (state?.noBet ? 0 : 10);
 }
 
 export async function getLobby(lobbyId: string): Promise<LobbyWithPlayers | null> {
@@ -151,7 +176,8 @@ export async function getLobby(lobbyId: string): Promise<LobbyWithPlayers | null
     [lobbyId]
   );
   
-  const lobby = mapLobby(lobbyResult.rows[0]);
+  const lobbyState = activeLobbies.get(lobbyId);
+  const lobby = mapLobby(lobbyResult.rows[0], lobbyState?.betAmount);
   
   return {
     ...lobby,
@@ -164,6 +190,8 @@ export async function getLobby(lobbyId: string): Promise<LobbyWithPlayers | null
       user: {
         id: row.user_id,
         telegramId: 0,
+        yandexId: null,
+        platform: 'telegram',
         nickname: row.nickname,
         telegramUsername: row.telegram_username,
         firstName: null,
@@ -215,32 +243,68 @@ export async function joinLobby(lobbyId: string, userId: number): Promise<boolea
   return true;
 }
 
-export async function leaveLobby(lobbyId: string, userId: number): Promise<boolean> {
+export interface LeaveLobbyResult {
+  // True if the lobby itself was closed as a result of this leave call
+  // (either because it became empty, or because the game is in progress
+  // and not enough players remain to continue).
+  closed: boolean;
+  // Why we closed the lobby; undefined when we left it alive.
+  closedReason?: 'empty' | 'insufficient_players';
+  // Player ids that were still in the lobby at the moment we computed
+  // the close decision. Useful for sending them a `game_ended_by_disconnect`
+  // when `closedReason === 'insufficient_players'`.
+  remainingPlayers: number[];
+}
+
+export async function leaveLobby(lobbyId: string, userId: number): Promise<LeaveLobbyResult> {
   await query(
     `UPDATE lobby_players SET status = 'left' WHERE lobby_id = $1 AND user_id = $2`,
     [lobbyId, userId]
   );
-  
+
   // Update connection
   const conn = connections.getConnection(userId);
   if (conn) {
     conn.lobbyId = null;
     conn.inGame = false;
   }
-  
+
   // Update in-memory state
   const state = activeLobbies.get(lobbyId);
+  let closed = false;
+  let closedReason: 'empty' | 'insufficient_players' | undefined;
+  let remainingPlayers: number[] = [];
+
   if (state) {
     state.players.delete(userId);
     state.votes.delete(userId);
-    
-    // If no players left, close lobby
+    remainingPlayers = Array.from(state.players);
+
     if (state.players.size === 0) {
+      // Nobody is left → close the lobby outright.
       await closeLobby(lobbyId);
+      closed = true;
+      closedReason = 'empty';
+    } else if (state.status === 'playing' && state.players.size < 2) {
+      // Game in progress but the match can no longer continue (fewer
+      // than 2 players left). Force-end it instead of letting the
+      // remaining player sit alone forever or, worse, restart a "new
+      // game" with themselves. Mirrors the timeout branch in
+      // `markPlayerDisconnected` further down this file.
+      for (const remainingUserId of state.players) {
+        const remainingConn = connections.getConnection(remainingUserId);
+        if (remainingConn) {
+          remainingConn.lobbyId = null;
+          remainingConn.inGame = false;
+        }
+      }
+      await closeLobby(lobbyId);
+      closed = true;
+      closedReason = 'insufficient_players';
     }
   }
-  
-  return true;
+
+  return { closed, closedReason, remainingPlayers };
 }
 
 export async function closeLobby(lobbyId: string): Promise<void> {
@@ -475,7 +539,9 @@ export function getMinAspectRatio(lobbyId: string): number | null {
   return minAspect === Infinity ? null : minAspect;
 }
 
-function mapLobby(row: LobbyRow): Lobby {
+function mapLobby(row: LobbyRow, betAmount?: number): Lobby {
+  const noBet = row.no_bet === true;
+  const rowBetAmount = typeof row.bet_amount === 'number' ? row.bet_amount : undefined;
   return {
     id: row.id,
     hostId: row.host_id,
@@ -483,6 +549,8 @@ function mapLobby(row: LobbyRow): Lobby {
     status: row.status as 'voting' | 'waiting' | 'playing' | 'finished',
     selectedTableId: row.selected_table_id,
     maxPlayers: row.max_players,
+    noBet,
+    betAmount: betAmount ?? rowBetAmount ?? (noBet ? 0 : 10),
     createdAt: new Date(row.created_at),
     startedAt: row.started_at ? new Date(row.started_at) : null,
     finishedAt: row.finished_at ? new Date(row.finished_at) : null,

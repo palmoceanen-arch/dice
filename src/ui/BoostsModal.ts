@@ -276,13 +276,20 @@ export class BoostsModal {
     }, 1000);
   }
 
-  private static handleBoostActivated(data: { boostId: string; activeUntil: number; selectedParity?: 'even' | 'odd' }) {
+  private static handleBoostActivated(data: { boostId: string; activeUntil: number; selectedParity?: 'even' | 'odd'; availableAt?: number }) {
     const state = this.boostStates.get(data.boostId);
     if (state) {
       state.active = true;
       state.activeUntil = data.activeUntil;
       if (data.selectedParity) {
         state.selectedParity = data.selectedParity;
+      }
+      // Optional: pre-commit the post-cooldown availableAt at activation time
+      // so the timer survives the page being closed mid-boost (the Yandex
+      // offline stub uses this; the Telegram server omits it and instead
+      // sends a separate `boost_expired` message).
+      if (typeof data.availableAt === 'number') {
+        state.availableAt = data.availableAt;
       }
       this.saveStates();
       this.updateBoostIcon();

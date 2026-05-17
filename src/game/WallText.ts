@@ -63,14 +63,10 @@ export class WallText {
     
     scene.add(this.mesh);
     
-    console.log('[WallText] Created at position:', position, 'size:', width, height);
-    console.log('[WallText] Canvas resolution:', this.canvas.width, 'x', this.canvas.height);
-    console.log('[WallText] Mesh visible:', this.mesh.visible);
     
     // Ждем загрузки шрифта перед первым рендером
     if (document.fonts && document.fonts.load) {
       document.fonts.load('300px "Alfa Slab One"').then(() => {
-        console.log('[WallText] Alfa Slab One font loaded, updating canvas');
         this.updateCanvasImmediate();
       }).catch(() => {
         console.warn('[WallText] Failed to load Alfa Slab One, using fallback');
@@ -179,7 +175,6 @@ export class WallText {
     
     // DEBUG: Логируем обновление
     if ((window as any).__debugWallText) {
-      console.log('[WallText] Updated canvas with pips:', this.pips);
     }
   }
   

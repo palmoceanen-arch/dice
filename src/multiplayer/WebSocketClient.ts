@@ -28,7 +28,13 @@ type MessageHandler = (data: unknown) => void;
 
 interface User {
   id: number;
-  telegramId: number;
+  // Telegram users only. For Yandex Games users this is null.
+  telegramId: number | null;
+  // Yandex Games users only. For Telegram users this is null.
+  yandexId?: string | null;
+  // Platform discriminator from the server. Optional so any preexisting
+  // server response (Telegram-only) still typechecks at the consumer side.
+  platform?: 'telegram' | 'yandex';
   nickname: string;
   telegramUsername: string | null;
   firstName: string | null;
@@ -38,6 +44,14 @@ interface User {
   equippedEffectId: number | null;
   referralCode?: string | null;
   pips?: number;
+}
+
+export interface WebSocketClientOptions {
+  // When provided, `authenticate()` sends `{type:'auth', ...getAuthPayload()}`
+  // instead of the default Telegram initData payload. The Yandex Games build
+  // uses this to ship `{platform:'yandex', signedData, playerInfo}` so the
+  // server can verify the Yandex HMAC signature.
+  getAuthPayload?: () => Record<string, unknown>;
 }
 
 interface Item {
@@ -121,7 +135,10 @@ export class WebSocketClient {
   // Reconnect support
   public pendingReconnect: { lobbyId: string; timeLeft: number } | null = null;
 
-  constructor(private serverUrl: string) {
+  constructor(
+    private serverUrl: string,
+    private options?: WebSocketClientOptions,
+  ) {
     // Start periodic connection check
     setInterval(() => {
       this.checkConnectionStatus();
@@ -211,9 +228,21 @@ export class WebSocketClient {
   }
 
   private authenticate() {
-    // Get Telegram initData
+    // Pluggable auth (used by the Yandex Games build to ship the player
+    // signature instead of Telegram initData).
+    if (this.options?.getAuthPayload) {
+      const payload = this.options.getAuthPayload();
+      this.send({
+        type: 'auth',
+        ...payload,
+      });
+      return;
+    }
+
+    // Default: Telegram initData (or a dev fallback when running outside
+    // the Telegram WebApp).
     const initData = window.Telegram?.WebApp?.initData || this.createDevInitData();
-    
+
     this.send({
       type: 'auth',
       initData
@@ -281,7 +310,6 @@ export class WebSocketClient {
       
       // Skip logging for high-frequency messages
       if (message.type !== 'throw_frame' && message.type !== 'throw_sound') {
-        console.log('[WS] Received:', message.type);
       }
       
       // Handle server shutdown notification
@@ -299,7 +327,6 @@ export class WebSocketClient {
       
       // Handle connection health updates
       if (message.type === 'connection_health') {
-        console.log('[WS] Connection health:', message.health);
         this.connectionHealth = message.health;
         this.emit('connection_health_changed', { 
           health: message.health,
@@ -309,17 +336,14 @@ export class WebSocketClient {
       
       // Handle friend connection status
       if (message.type === 'friend_connection_status') {
-        console.log('[WS] Friend connection status:', message.friendId, message.connectionHealth);
       }
       
       // Handle player connection status in lobby
       if (message.type === 'player_connection_status') {
-        console.log('[WS] Player connection status:', message.userId, message.connectionHealth);
       }
       
       // Debug dice_throw_sync
       if (message.type === 'dice_throw_sync') {
-        console.log('[WS] dice_throw_sync full message:', message);
       }
       
       // Handle auth success
@@ -331,7 +355,6 @@ export class WebSocketClient {
         
         // Check if we can reconnect to a game
         if (message.canReconnect) {
-          console.log('[WS] Can reconnect to game:', message.canReconnect.lobbyId, 'time left:', message.canReconnect.timeLeft);
           this.pendingReconnect = message.canReconnect;
         }
       }
@@ -533,13 +556,53 @@ export class WebSocketClient {
   }
   
   // API methods - Lobby
-  createLobby(gameMode: 'free_roll' | 'street_craps' | 'mexico' | 'greedy_pig' | 'poker_dice') {
-    this.send({ 
-      type: 'create_lobby', 
+  //
+  // `bet` is the per-player stake in pips. `0` means a no-bet lobby (Yandex
+  // Games and any other case where the host wants to skip the betting flow).
+  // Telegram callsites that don't pass it keep the legacy behaviour (the
+  // server defaults to a regular betting lobby) so this is backwards
+  // compatible.
+  createLobby(
+    gameMode: 'free_roll' | 'street_craps' | 'mexico' | 'greedy_pig' | 'poker_dice',
+    bet?: number,
+  ) {
+    this.send({
+      type: 'create_lobby',
       gameMode,
+      bet,
       screenWidth: window.innerWidth,
-      screenHeight: window.innerHeight
+      screenHeight: window.innerHeight,
     });
+  }
+
+  // API methods - Matchmaking (Yandex quick-play)
+  //
+  // The matchmaking queue is server-side: the client just announces its
+  // preferred mode/bet and listens for `mm_queued` / `mm_match_found` /
+  // `mm_match_failed`.
+  joinQueue(
+    mode: 'duel' | 'any',
+    betAmount: number,
+    gameMode?: 'free_roll' | 'street_craps' | 'mexico' | 'greedy_pig' | 'poker_dice',
+  ) {
+    this.send({ type: 'mm_join_queue', mode, betAmount, gameMode });
+  }
+
+  leaveQueue() {
+    this.send({ type: 'mm_leave_queue' });
+  }
+
+  // Confirm "I'm ready" for a match the server already broadcast as
+  // `mm_match_found`. The server requires every matched player to send
+  // this before it will start the game; players who don't confirm
+  // before the deadline cause the match to be cancelled and bets
+  // refunded.
+  confirmReady() {
+    this.send({ type: 'mm_ready' });
+  }
+
+  getPlayerStats() {
+    this.send({ type: 'get_player_stats' });
   }
   
   joinLobby(lobbyId: string) {

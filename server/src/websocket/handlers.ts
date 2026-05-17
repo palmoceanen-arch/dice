@@ -1,13 +1,15 @@
 import type { WebSocket } from 'ws';
 import type { GameMode } from '../types/index.js';
-import { validateInitData, parseInitDataUnsafe, extractStartParam } from '../services/auth.js';
-import { findOrCreateUser, getUserInventory, getShopItems, setNickname, equipItem, getUserByUsername, getUserById, updatePips, getUserPips } from '../services/users.js';
+import { validateInitData, parseInitDataUnsafe, extractStartParam, validateYandexSignature, parseYandexPlayerUnsafe } from '../services/auth.js';
+import { findOrCreateUser, findOrCreateYandexUser, getUserInventory, getShopItems, setNickname, equipItem, getUserByUsername, getUserById, updatePips, getUserPips } from '../services/users.js';
 import { getFriends, addFriend, removeFriend, sendFriendRequest, getPendingFriendRequests, acceptFriendRequest, declineFriendRequest } from '../services/friends.js';
 import { getReferralStats, getReferralList } from '../services/referrals.js';
 import { activateBoost, getActiveBoosts, getBoostState } from '../services/boosts.js';
 import { BettingManager } from '../services/betting.js';
 import * as lobby from '../services/lobby.js';
 import * as game from '../services/game.js';
+import * as matchmaking from '../services/matchmaking.js';
+import { getPlayerStats } from '../services/stats.js';
 import * as connections from './connections.js';
 import { setUserIdForWs } from './server.js';
 import { config } from '../config.js';
@@ -21,11 +23,34 @@ import { validateRoll } from '../utils/anti-fraud.js';
 // Key: lobbyId, Value: Map of playerId -> last frame data
 const lastFrameStorage = new Map<string, Map<number, any>>();
 
+// Tracks the throw currently being streamed for each lobby. When a player
+// reconnects mid-throw we replay a synthesized `throw_start` from this
+// state so the dice on their screen pick up the opponent's skin and join
+// the in-flight replay instead of staying frozen in their own default
+// configuration.
+interface ActiveThrowState {
+  playerId: number;
+  playerNickname: string;
+  throwPower: number;
+  effectId: number | null;
+  equippedDiceId: number | null | undefined;
+  diceConfig: Record<string, unknown> | null;
+  selectedDice?: number[];
+  startedAt: number;
+}
+const activeThrows = new Map<string, ActiveThrowState>();
+// Throws older than this are assumed to have ended without a `throw_end`
+// (player crashed, network died, etc.) and won't be replayed on reconnect.
+const ACTIVE_THROW_MAX_AGE_MS = 30_000;
+
 // Message is already validated by server.ts, so we receive typed data
 export async function handleMessage(ws: WebSocket, message: any, userId: number | null): Promise<number | null> {
   // Auth message - no userId required
   if (message.type === 'auth') {
     metricsCollector.authAttempt();
+    if (message.platform === 'yandex') {
+      return handleYandexAuth(ws, message.signedData ?? null, message.playerInfo ?? null);
+    }
     return handleAuth(ws, message.initData);
   }
   
@@ -91,9 +116,27 @@ export async function handleMessage(ws: WebSocket, message: any, userId: number 
         break;
         
       // Lobby
-      case 'create_lobby':
-        await handleCreateLobby(userId, message.gameMode, message.screenWidth, message.screenHeight);
+      case 'create_lobby': {
+        // New protocol: `bet` is the per-player stake in pips. `0`
+        // (or omitted with `noBet: true`) means a no-bet lobby.
+        //
+        // Legacy protocol (Telegram callsites): `noBet: true`. When
+        // both are absent we default to a regular betting lobby.
+        const bet =
+          typeof message.bet === 'number'
+            ? message.bet
+            : message.noBet === true
+              ? 0
+              : undefined;
+        await handleCreateLobby(
+          userId,
+          message.gameMode,
+          message.screenWidth,
+          message.screenHeight,
+          bet,
+        );
         break;
+      }
       case 'join_lobby':
         await handleJoinLobby(userId, message.lobbyId, message.screenWidth, message.screenHeight);
         break;
@@ -179,6 +222,17 @@ export async function handleMessage(ws: WebSocket, message: any, userId: number 
       case 'save_custom_dice':
         await handleSaveCustomDice(userId, message.config);
         break;
+
+      // Yandex Games: push the player's locally-equipped dice / table /
+      // effect configs to the server so the server can broadcast them to
+      // opponents in multiplayer.
+      case 'set_player_items':
+        handleSetPlayerItems(userId, {
+          dice: message.dice,
+          table: message.table,
+          effect: message.effect,
+        });
+        break;
       
       // Reactions
       case 'send_reaction':
@@ -195,7 +249,29 @@ export async function handleMessage(ws: WebSocket, message: any, userId: number 
       case 'cancel_bet':
         await handleCancelBet(userId);
         break;
-      
+
+      // Matchmaking (Yandex quick-play)
+      case 'mm_join_queue':
+        await matchmaking.joinQueue({
+          userId,
+          mode: message.mode,
+          betAmount: message.betAmount,
+          gameMode: message.gameMode,
+        });
+        break;
+      case 'mm_leave_queue':
+        matchmaking.leaveQueue(userId);
+        break;
+      case 'mm_ready':
+        matchmaking.markReady(userId);
+        break;
+      case 'sync_yandex_pips':
+        await handleSyncYandexPips(userId, message.pips);
+        break;
+      case 'get_player_stats':
+        await handleGetPlayerStats(userId);
+        break;
+
       default:
         connections.send(userId, { type: 'error', message: `Unknown message type: ${message.type}` });
     }
@@ -227,6 +303,68 @@ async function handleAdminGift(targetUserId: number, item: any): Promise<void> {
 }
 
 // === Auth ===
+async function handleYandexAuth(
+  ws: WebSocket,
+  signedData: string | null,
+  playerInfo: { uuid?: string; publicName?: string; avatarUrlSmall?: string; avatarUrlMedium?: string; avatarUrlLarge?: string; lang?: string } | null,
+): Promise<number | null> {
+  // Verified payload (uuid) takes precedence over playerInfo.uuid. In prod we
+  // require a valid HMAC; in dev we fall back to the unsafe parser so local
+  // npm run dev works without YANDEX_APP_SECRET set.
+  const verified = signedData ? validateYandexSignature(signedData) : null;
+
+  let yandexPlayer: import('../types/index.js').YandexPlayer | null = null;
+  if (verified) {
+    yandexPlayer = {
+      uuid: verified.uuid,
+      publicName: playerInfo?.publicName,
+      avatarUrlSmall: playerInfo?.avatarUrlSmall,
+      avatarUrlMedium: playerInfo?.avatarUrlMedium,
+      avatarUrlLarge: playerInfo?.avatarUrlLarge,
+      lang: playerInfo?.lang,
+    };
+  } else if (config.isDev) {
+    yandexPlayer = parseYandexPlayerUnsafe(signedData, playerInfo ?? null);
+  }
+
+  if (!yandexPlayer) {
+    metricsCollector.authFailure();
+    logger.warn('Yandex auth failed', { hasSignedData: !!signedData });
+    ws.send(JSON.stringify({ type: 'auth_error', message: 'Invalid Yandex signature' }));
+    return null;
+  }
+
+  const user = await findOrCreateYandexUser(yandexPlayer);
+  const inventory = await getUserInventory(user.id);
+  const activeBoosts = await getActiveBoosts(user.id);
+
+  setUserIdForWs(ws, user.id);
+  connections.addConnection(user, ws);
+
+  const reconnectInfo = lobby.canReconnect(user.id);
+
+  ws.send(JSON.stringify({
+    type: 'auth_success',
+    user,
+    inventory,
+    activeBoosts,
+    canReconnect: reconnectInfo ? {
+      lobbyId: reconnectInfo.lobbyId,
+      timeLeft: reconnectInfo.timeLeft,
+    } : null,
+  }));
+
+  metricsCollector.authSuccess();
+  logger.info('Yandex user authenticated', {
+    userId: user.id,
+    yandexId: user.yandexId,
+    nickname: user.nickname,
+    canReconnect: !!reconnectInfo,
+  });
+
+  return user.id;
+}
+
 async function handleAuth(ws: WebSocket, initData: string): Promise<number | null> {
   const telegramUser = config.isDev 
     ? parseInitDataUnsafe(initData) 
@@ -304,6 +442,177 @@ async function handleSetNickname(userId: number, nickname: string): Promise<void
     connections.send(userId, { type: 'nickname_changed', nickname });
   } else {
     connections.send(userId, { type: 'error', message: 'Nickname is invalid or already taken' });
+  }
+}
+
+// Stash the client-supplied dice/table/effect overrides on the
+// connection. See `connections.ClientItemOverride` for the rationale.
+// Called synchronously by the message dispatcher — no DB writes, no
+// broadcasts; the next `game_started` / `throw_start` will pick the
+// overrides up.
+function handleSetPlayerItems(
+  userId: number,
+  items: {
+    dice?: connections.ClientItemOverride | null;
+    table?: connections.ClientItemOverride | null;
+    effect?: connections.ClientItemOverride | null;
+  },
+): void {
+  connections.setClientItemOverride(userId, 'dice', items.dice);
+  connections.setClientItemOverride(userId, 'table', items.table);
+  connections.setClientItemOverride(userId, 'effect', items.effect);
+
+  // Log what the client pushed so we can diagnose the Yandex "opponents see
+  // white dice" bug from journalctl. Only logs slots that were actually
+  // sent (undefined slots are no-ops).
+  const summary: Record<string, string> = {};
+  if (items.dice !== undefined) summary.dice = items.dice ? items.dice.code : 'null';
+  if (items.table !== undefined) summary.table = items.table ? items.table.code : 'null';
+  if (items.effect !== undefined) summary.effect = items.effect ? items.effect.code : 'null';
+  if (Object.keys(summary).length > 0) {
+    logger.info('set_player_items received', { userId, ...summary });
+  }
+}
+
+// Synthetic, per-user item IDs for client-supplied dice/table/effect
+// configs (Yandex Cloud Save). Chosen well above the real `item_catalog`
+// id range so they cannot collide with any DB row. The shape matches
+// what client code uses to key configs in `availableItems`.
+const SYNTHETIC_ITEM_ID_OFFSET = 1_000_000_000;
+function syntheticItemId(userId: number, slot: 'dice' | 'table' | 'effect'): number {
+  const slotOffset = slot === 'dice' ? 1 : slot === 'table' ? 2 : 3;
+  return SYNTHETIC_ITEM_ID_OFFSET + userId * 10 + slotOffset;
+}
+
+// Build the `availableItems` payload for a game_started broadcast,
+// merging DB-equipped items (Telegram path) with client-supplied
+// overrides (Yandex path). Also returns the per-player effective IDs
+// the client should treat as each player's equipped slot, so the
+// `lobby.players[].user.equippedDiceId` fields can be patched to match.
+export interface LobbyPlayerLike {
+  user: { id: number; equippedDiceId: number | null; equippedTableId: number | null; equippedEffectId: number | null };
+}
+export interface AvailableItem {
+  id: number;
+  type: string;
+  code: string;
+  name: string;
+  config: Record<string, unknown> | null;
+}
+export interface PlayerEquipOverride {
+  userId: number;
+  equippedDiceId?: number;
+  equippedTableId?: number;
+  equippedEffectId?: number;
+}
+export async function buildAvailableItemsAndOverrides(
+  players: LobbyPlayerLike[],
+): Promise<{ availableItems: AvailableItem[]; equipOverrides: PlayerEquipOverride[] }> {
+  const availableItems: AvailableItem[] = [];
+  const seenItemIds = new Set<number>();
+  const equipOverrides: PlayerEquipOverride[] = [];
+  // Per-player diagnostic breakdown: which slot resolved via client
+  // override vs DB row. Logged once at the end so a single journalctl
+  // line tells you exactly what each opponent will render with.
+  const perPlayerSummary: Array<Record<string, unknown>> = [];
+
+  for (const player of players) {
+    const userId = player.user.id;
+    if (!userId) continue;
+
+    const override: PlayerEquipOverride = { userId };
+    const summary: Record<string, unknown> = { userId };
+    const slots: Array<'dice' | 'table' | 'effect'> = ['dice', 'table', 'effect'];
+    for (const slot of slots) {
+      const clientItem = connections.getClientItemOverride(userId, slot);
+      const dbItemId =
+        slot === 'dice'
+          ? player.user.equippedDiceId
+          : slot === 'table'
+            ? player.user.equippedTableId
+            : player.user.equippedEffectId;
+
+      if (clientItem) {
+        // Client supplied an override — synthesize an id and inject the
+        // config directly into availableItems.
+        const id = syntheticItemId(userId, slot);
+        if (!seenItemIds.has(id)) {
+          seenItemIds.add(id);
+          availableItems.push({
+            id,
+            type: slot,
+            code: clientItem.code,
+            name: clientItem.name,
+            config: clientItem.config,
+          });
+        }
+        if (slot === 'dice') override.equippedDiceId = id;
+        else if (slot === 'table') override.equippedTableId = id;
+        else override.equippedEffectId = id;
+        summary[slot] = `client:${clientItem.code}`;
+      } else if (dbItemId && !seenItemIds.has(dbItemId)) {
+        seenItemIds.add(dbItemId);
+        const result = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
+          'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
+          [dbItemId],
+        );
+        if (result.rows[0]) {
+          const row = result.rows[0];
+          availableItems.push({
+            id: row.id,
+            type: row.type,
+            code: row.code,
+            name: row.name,
+            config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
+          });
+          summary[slot] = `db:${row.code}`;
+        } else {
+          summary[slot] = `db:missing(${dbItemId})`;
+        }
+      } else if (dbItemId) {
+        // Already in availableItems from a previous player — still record
+        // that this player resolved via DB so the log line is complete.
+        summary[slot] = `db:${dbItemId}`;
+      } else {
+        summary[slot] = 'none';
+      }
+    }
+
+    if (
+      override.equippedDiceId !== undefined ||
+      override.equippedTableId !== undefined ||
+      override.equippedEffectId !== undefined
+    ) {
+      equipOverrides.push(override);
+    }
+    perPlayerSummary.push(summary);
+  }
+
+  logger.info('buildAvailableItemsAndOverrides', {
+    players: perPlayerSummary,
+    availableItemsCount: availableItems.length,
+    overridesCount: equipOverrides.length,
+  });
+
+  return { availableItems, equipOverrides };
+}
+
+// Apply client-side equip overrides to a lobby payload so opponents see
+// the synthetic IDs and can match them up with `availableItems`.
+export function applyEquipOverridesToLobby(
+  lobbyPayload: { players?: LobbyPlayerLike[] } | null | undefined,
+  overrides: PlayerEquipOverride[],
+): void {
+  if (!lobbyPayload?.players || overrides.length === 0) return;
+  const byUser = new Map(overrides.map((o) => [o.userId, o]));
+  for (const player of lobbyPayload.players) {
+    const userId = player.user.id;
+    if (!userId) continue;
+    const o = byUser.get(userId);
+    if (!o) continue;
+    if (o.equippedDiceId !== undefined) player.user.equippedDiceId = o.equippedDiceId;
+    if (o.equippedTableId !== undefined) player.user.equippedTableId = o.equippedTableId;
+    if (o.equippedEffectId !== undefined) player.user.equippedEffectId = o.equippedEffectId;
   }
 }
 
@@ -602,15 +911,30 @@ async function handleGetReferralList(userId: number): Promise<void> {
 }
 
 // === Lobby ===
-async function handleCreateLobby(userId: number, gameMode: GameMode, screenWidth?: number, screenHeight?: number): Promise<void> {
+async function handleCreateLobby(
+  userId: number,
+  gameMode: GameMode,
+  screenWidth?: number,
+  screenHeight?: number,
+  bet?: number,
+): Promise<void> {
   // Check if already in a lobby
   const conn = connections.getConnection(userId);
   if (conn?.lobbyId) {
     connections.send(userId, { type: 'error', message: 'Already in a lobby' });
     return;
   }
-  
-  const newLobby = await lobby.createLobby(userId, gameMode);
+
+  if (matchmaking.isQueued(userId)) {
+    matchmaking.leaveQueue(userId);
+  }
+
+  // `bet === 0` (and the legacy `noBet: true` path) opt into the no-bet
+  // lobby flavour; any positive value or `undefined` keeps the regular
+  // betting flow.
+  const noBet = bet === 0;
+  const betAmount = noBet ? 0 : bet ?? 10;
+  const newLobby = await lobby.createLobby(userId, gameMode, noBet, betAmount);
   metricsCollector.lobbyCreated();
   
   // Store screen size
@@ -633,6 +957,10 @@ async function handleCreateLobby(userId: number, gameMode: GameMode, screenWidth
 }
 
 async function handleJoinLobby(userId: number, lobbyId: string, screenWidth?: number, screenHeight?: number): Promise<void> {
+  if (matchmaking.isQueued(userId)) {
+    matchmaking.leaveQueue(userId);
+  }
+
   const success = await lobby.joinLobby(lobbyId, userId);
   
   if (success) {
@@ -644,10 +972,14 @@ async function handleJoinLobby(userId: number, lobbyId: string, screenWidth?: nu
     const lobbyData = await lobby.getLobby(lobbyId);
     connections.send(userId, { type: 'lobby_joined', lobby: lobbyData });
     
-    // Initialize betting if 2+ players
-    if (lobbyData && lobbyData.players.length >= 2) {
+    // Initialize betting if 2+ players (skip entirely for no-bet lobbies).
+    if (
+      lobbyData &&
+      !lobby.isNoBetLobby(lobbyId) &&
+      lobbyData.players.length >= 2
+    ) {
       if (!BettingManager.isActive(lobbyId)) {
-        BettingManager.initialize(lobbyId, 10);
+        BettingManager.initialize(lobbyId, lobby.getLobbyBetAmount(lobbyId));
         logger.info('[BETTING] Initialized for lobby', { lobbyId, playerCount: lobbyData.players.length });
       }
     }
@@ -701,25 +1033,23 @@ async function handleLeaveLobby(userId: number): Promise<void> {
     connections.send(userId, { type: 'error', message: 'Not in a lobby' });
     return;
   }
-  
+
   const lobbyId = conn.lobbyId;
-  
+
   // Get pending invitation users before leaving (to notify them if lobby closes)
   const pendingInviteUsers = await lobby.getPendingInvitationUsers(lobbyId);
-  
-  await lobby.leaveLobby(lobbyId, userId);
-  
+
+  const leaveResult = await lobby.leaveLobby(lobbyId, userId);
+
   // Get updated pips balance
   const newPips = await getUserPips(userId);
-  
-  connections.send(userId, { 
+
+  connections.send(userId, {
     type: 'lobby_left',
-    newPips 
+    newPips
   });
-  
-  // Check if lobby was closed (no players left)
-  const lobbyData = await lobby.getLobby(lobbyId);
-  if (!lobbyData || lobbyData.status === 'finished') {
+
+  if (leaveResult.closed) {
     // Notify all users with pending invitations that the lobby was closed
     for (const invitedUserId of pendingInviteUsers) {
       connections.send(invitedUserId, {
@@ -727,14 +1057,32 @@ async function handleLeaveLobby(userId: number): Promise<void> {
         lobbyId,
       });
     }
+
+    // Any active throw belonging to this lobby is now meaningless.
+    activeThrows.delete(lobbyId);
   }
-  
-  // Notify other players
-  broadcastToLobby(lobbyId, {
-    type: 'player_left',
-    oderId: userId,
-  }, userId);
-  
+
+  if (leaveResult.closedReason === 'insufficient_players') {
+    // The game was in progress and this player's leave dropped the lobby
+    // below the playable threshold. Tell the remaining player(s) the game
+    // is over so their UI exits the in-game state instead of waiting on a
+    // turn that will never come.
+    for (const remainingUserId of leaveResult.remainingPlayers) {
+      connections.send(remainingUserId, {
+        type: 'game_ended_by_disconnect',
+        oderId: userId,
+        reason: 'opponent_left',
+      });
+    }
+  } else {
+    // Lobby still alive (or never had >1 player to begin with) — tell
+    // the rest of the lobby that this player is gone so their UI updates.
+    broadcastToLobby(lobbyId, {
+      type: 'player_left',
+      oderId: userId,
+    }, userId);
+  }
+
   // Notify friends that user is back online (not in lobby anymore)
   notifyFriendsStatusChanged(userId, 'online');
 }
@@ -875,13 +1223,37 @@ async function handleReconnectGame(userId: number, lobbyId: string): Promise<voi
   // Notify other players that this player reconnected
   const player = lobbyData.players.find(p => p.oderId === userId);
   const playerNickname = player?.user?.nickname || 'Player';
-  
+
   broadcastToLobby(lobbyId, {
     type: 'player_reconnected',
     oderId: userId,
     nickname: playerNickname,
   }, userId);
-  
+
+  // If another player was mid-throw when this player reconnected, replay
+  // a synthesized `throw_start` to them so their client picks up the
+  // opponent's dice skin and joins the in-flight streaming replay. We
+  // skip it when the reconnecting player IS the thrower (they own the
+  // throw locally) or when the throw is older than ACTIVE_THROW_MAX_AGE_MS
+  // (the original thrower probably crashed and never sent throw_end).
+  const active = activeThrows.get(lobbyId);
+  if (
+    active &&
+    active.playerId !== userId &&
+    Date.now() - active.startedAt < ACTIVE_THROW_MAX_AGE_MS
+  ) {
+    connections.send(userId, {
+      type: 'throw_start',
+      playerId: active.playerId,
+      playerNickname: active.playerNickname,
+      throwPower: active.throwPower,
+      effectId: active.effectId,
+      equippedDiceId: active.equippedDiceId,
+      diceConfig: active.diceConfig,
+      selectedDice: active.selectedDice,
+    });
+  }
+
   console.log(`[Game] Player ${userId} reconnected to game ${lobbyId}`);
 }
 
@@ -933,10 +1305,13 @@ async function handleStartGame(userId: number): Promise<void> {
     return;
   }
   
-  // Check if betting is required (2+ players)
+  // Check if betting is required (2+ players). No-bet lobbies (e.g. the
+  // Yandex Games build) always skip the betting UI and go straight into
+  // gameplay regardless of player count.
   const playerIds = lobby.getLobbyPlayers(conn.lobbyId);
-  
-  if (playerIds.length >= 2) {
+  const skipBetting = lobby.isNoBetLobby(conn.lobbyId);
+
+  if (!skipBetting && playerIds.length >= 2) {
     // Check if betting is already active
     if (BettingManager.isActive(conn.lobbyId)) {
       const state = BettingManager.getState(conn.lobbyId);
@@ -984,84 +1359,37 @@ async function handleStartGame(userId: number): Promise<void> {
       }
     }
     
-    // Collect all equipped items from all players for client-side preloading
-    const availableItems: any[] = [];
-    const seenItemIds = new Set<number>();
-    
-    if (updatedLobby) {
-      for (const player of updatedLobby.players) {
-        // Add dice
-        if (player.user.equippedDiceId && !seenItemIds.has(player.user.equippedDiceId)) {
-          seenItemIds.add(player.user.equippedDiceId);
-          const diceResult = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
-            'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
-            [player.user.equippedDiceId]
-          );
-          if (diceResult.rows[0]) {
-            const row = diceResult.rows[0];
-            availableItems.push({
-              id: row.id,
-              type: row.type,
-              code: row.code,
-              name: row.name,
-              config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-            });
-          }
-        }
-        
-        // Add table
-        if (player.user.equippedTableId && !seenItemIds.has(player.user.equippedTableId)) {
-          seenItemIds.add(player.user.equippedTableId);
-          const tableResult = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
-            'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
-            [player.user.equippedTableId]
-          );
-          if (tableResult.rows[0]) {
-            const row = tableResult.rows[0];
-            availableItems.push({
-              id: row.id,
-              type: row.type,
-              code: row.code,
-              name: row.name,
-              config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-            });
-          }
-        }
-        
-        // Add effect
-        if (player.user.equippedEffectId && !seenItemIds.has(player.user.equippedEffectId)) {
-          seenItemIds.add(player.user.equippedEffectId);
-          const effectResult = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
-            'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
-            [player.user.equippedEffectId]
-          );
-          if (effectResult.rows[0]) {
-            const row = effectResult.rows[0];
-            availableItems.push({
-              id: row.id,
-              type: row.type,
-              code: row.code,
-              name: row.name,
-              config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-            });
-          }
-        }
-      }
-    }
+    // Collect all equipped items (DB-backed and client-supplied) so the
+    // client can preload every other player's dice / table / effect
+    // config for replays. Patches lobby.players[*].user.equipped*Id to
+    // the synthetic IDs when a client-supplied override is in play, so
+    // the client can map players → configs via `availableItems` like
+    // before.
+    const { availableItems, equipOverrides } = await buildAvailableItemsAndOverrides(
+      updatedLobby?.players ?? [],
+    );
+    applyEquipOverridesToLobby(updatedLobby, equipOverrides);
     
     // Get selected table config (fallback to host's equipped table if not selected)
     let tableConfig = await lobby.getSelectedTableConfig(conn.lobbyId);
     if (!tableConfig) {
-      // Fallback: get host's equipped table config from connection cache
-      const host = conn.user;
-      if (host.equippedTableId) {
-        const tableResult = await query<{ config: Record<string, unknown> | string | null }>(
-          'SELECT config FROM item_catalog WHERE id = $1',
-          [host.equippedTableId]
-        );
-        if (tableResult.rows[0]?.config) {
-          const cfg = tableResult.rows[0].config;
-          tableConfig = typeof cfg === 'string' ? JSON.parse(cfg) : cfg;
+      // Prefer a client-supplied table override (Yandex Cloud Save) over
+      // the DB-equipped table.
+      const hostTableOverride = connections.getClientItemOverride(userId, 'table');
+      if (hostTableOverride && hostTableOverride.config) {
+        tableConfig = hostTableOverride.config;
+      } else {
+        // Fallback: get host's equipped table config from connection cache
+        const host = conn.user;
+        if (host.equippedTableId) {
+          const tableResult = await query<{ config: Record<string, unknown> | string | null }>(
+            'SELECT config FROM item_catalog WHERE id = $1',
+            [host.equippedTableId]
+          );
+          if (tableResult.rows[0]?.config) {
+            const cfg = tableResult.rows[0].config;
+            tableConfig = typeof cfg === 'string' ? JSON.parse(cfg) : cfg;
+          }
         }
       }
     }
@@ -1114,22 +1442,42 @@ async function handleRestartGame(userId: number): Promise<void> {
     connections.send(userId, { type: 'error', message: 'Not in a lobby' });
     return;
   }
-  
+
   const lobbyData = await lobby.getLobby(conn.lobbyId);
   if (!lobbyData || lobbyData.hostId !== userId) {
     connections.send(userId, { type: 'error', message: 'Only host can restart the game' });
     return;
   }
-  
-  // Check if betting is required (2+ players)
+
+  // No-bet lobbies (e.g. the Yandex Games build) skip the betting UI on
+  // restart, matching what `handleStartGame` does on initial start.
+  // Without this, the host's "New Game" click on Yandex sent
+  // `show_betting_ui` to a client that never registered a handler for it
+  // and the game silently hung.
   const playerIds = lobby.getLobbyPlayers(conn.lobbyId);
-  
-  if (playerIds.length >= 2) {
-    // Initialize betting for new game
-    BettingManager.initialize(conn.lobbyId, 10);
+  const skipBetting = lobby.isNoBetLobby(conn.lobbyId);
+
+  // Refuse to restart a multiplayer match with a single player. Without
+  // this guard, a host whose opponents pressed "Exit" on the post-game
+  // result modal can keep pressing "New Game" and play with themselves.
+  // The Yandex `MultiplayerLobbyGuard` already auto-leaves the lobby on
+  // the first opponent drop client-side, but raw `restart_game` messages
+  // (devtools, modded client) can bypass that — this is the server-side
+  // safety net. `handleStartGame` intentionally still allows 1-player
+  // starts for solo Free Roll lobbies that have not had a multiplayer
+  // match yet.
+  if (playerIds.length < 2) {
+    connections.send(userId, {
+      type: 'error',
+      message: 'Need at least 2 players to start a new round',
+    });
+    return;
+  }
+
+  if (!skipBetting && playerIds.length >= 2) {
+    BettingManager.initialize(conn.lobbyId, lobby.getLobbyBetAmount(conn.lobbyId));
     logger.info('[BETTING] Initialized for restart', { lobbyId: conn.lobbyId, playerCount: playerIds.length });
-    
-    // Show betting UI to all players with their balances
+
     for (const playerId of playerIds) {
       const balance = await getUserPips(playerId);
       connections.send(playerId, {
@@ -1138,12 +1486,16 @@ async function handleRestartGame(userId: number): Promise<void> {
         balance
       });
     }
-    
+
     logger.info('[BETTING] Showing betting UI for restart', { lobbyId: conn.lobbyId });
-    return; // Wait for bets to be placed
+    return;
   }
-  
-  // Single player - start game immediately
+
+  logger.info('restart_game starting without betting', {
+    lobbyId: conn.lobbyId,
+    playerCount: playerIds.length,
+    skipBetting,
+  });
   await startGameAfterBetting(conn.lobbyId);
 }
 
@@ -1160,68 +1512,10 @@ async function startGameAfterBetting(lobbyId: string): Promise<void> {
   const minAspectRatio = lobby.getMinAspectRatio(lobbyId);
   const gameState = game.getGameState(lobbyId);
   
-  // Collect all equipped items from all players for client-side preloading
-  const availableItems: any[] = [];
-  const seenItemIds = new Set<number>();
-  
-  for (const player of lobbyData.players) {
-    // Add dice
-    if (player.user.equippedDiceId && !seenItemIds.has(player.user.equippedDiceId)) {
-      seenItemIds.add(player.user.equippedDiceId);
-      const diceResult = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
-        'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
-        [player.user.equippedDiceId]
-      );
-      if (diceResult.rows[0]) {
-        const row = diceResult.rows[0];
-        availableItems.push({
-          id: row.id,
-          type: row.type,
-          code: row.code,
-          name: row.name,
-          config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-        });
-      }
-    }
-    
-    // Add table
-    if (player.user.equippedTableId && !seenItemIds.has(player.user.equippedTableId)) {
-      seenItemIds.add(player.user.equippedTableId);
-      const tableResult = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
-        'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
-        [player.user.equippedTableId]
-      );
-      if (tableResult.rows[0]) {
-        const row = tableResult.rows[0];
-        availableItems.push({
-          id: row.id,
-          type: row.type,
-          code: row.code,
-          name: row.name,
-          config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-        });
-      }
-    }
-    
-    // Add effect
-    if (player.user.equippedEffectId && !seenItemIds.has(player.user.equippedEffectId)) {
-      seenItemIds.add(player.user.equippedEffectId);
-      const effectResult = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
-        'SELECT id, type, code, name, config FROM item_catalog WHERE id = $1',
-        [player.user.equippedEffectId]
-      );
-      if (effectResult.rows[0]) {
-        const row = effectResult.rows[0];
-        availableItems.push({
-          id: row.id,
-          type: row.type,
-          code: row.code,
-          name: row.name,
-          config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-        });
-      }
-    }
-  }
+  // Collect all equipped items (DB-backed and client-supplied) for
+  // client-side preloading. See `buildAvailableItemsAndOverrides`.
+  const { availableItems, equipOverrides } = await buildAvailableItemsAndOverrides(lobbyData.players);
+  applyEquipOverridesToLobby(lobbyData, equipOverrides);
   
   // Build mode-specific data
   let modeData: Record<string, unknown> = {};
@@ -1384,17 +1678,27 @@ async function handleThrowStart(userId: number, throwPower: number, effectId: nu
   
   // Use cached user data from connection
   const user = conn.user;
-  
-  // Get dice config from cache (should be preloaded, so this is fast)
-  // If not in cache, load it (first time only)
-  let diceConfig = null;
-  if (user.equippedDiceId) {
+
+  // Prefer a client-supplied dice override (Yandex Cloud Save) over the
+  // server's DB-equipped dice. See `Connection.clientItems`.
+  const clientDice = connections.getClientItemOverride(userId, 'dice');
+  let diceConfig: Record<string, unknown> | null = null;
+  let equippedDiceIdForBroadcast: number | null | undefined = user.equippedDiceId;
+  let diceSource: string;
+  if (clientDice && clientDice.config) {
+    diceConfig = clientDice.config;
+    equippedDiceIdForBroadcast = syntheticItemId(userId, 'dice');
+    diceSource = `client:${clientDice.code}`;
+  } else if (user.equippedDiceId) {
     diceConfig = await lobby.getDiceConfig(user.equippedDiceId);
-    // Log if config is missing (should not happen if preloading works)
     if (!diceConfig) {
       logger.warn('Dice config not found for throw_start', { userId, diceId: user.equippedDiceId });
+      diceSource = `db:missing(${user.equippedDiceId})`;
+    } else {
+      diceSource = `db:${user.equippedDiceId}`;
     }
   } else {
+    diceSource = 'default:classic_white';
     // Player has no equipped dice (standard dice) - use classic_white config from presets
     diceConfig = {
       baseColor: '#ffffff',
@@ -1411,7 +1715,14 @@ async function handleThrowStart(userId: number, throwPower: number, effectId: nu
       bevelRadius: 0.16, // Match classic_white preset
     };
   }
-  
+
+  logger.info('throw_start broadcast', {
+    userId,
+    lobbyId: conn.lobbyId,
+    diceSource,
+    broadcastDiceId: equippedDiceIdForBroadcast,
+  });
+
   // Broadcast throw_start to all other players with dice config and selected dice info
   // CRITICAL: This must arrive BEFORE throw_frame messages
   broadcastToLobby(conn.lobbyId, {
@@ -1420,10 +1731,24 @@ async function handleThrowStart(userId: number, throwPower: number, effectId: nu
     playerNickname: user.nickname,
     throwPower,
     effectId,
-    equippedDiceId: user.equippedDiceId,
+    equippedDiceId: equippedDiceIdForBroadcast,
     diceConfig,
     selectedDice // Pass selected dice for Palmo's Dice rerolls
   }, userId);
+
+  // Remember this throw so a player who reconnects mid-flight gets the
+  // same throw_start as everyone else (otherwise they sit there with
+  // their own default dice config and never join the replay).
+  activeThrows.set(conn.lobbyId, {
+    playerId: userId,
+    playerNickname: user.nickname,
+    throwPower,
+    effectId,
+    equippedDiceId: equippedDiceIdForBroadcast,
+    diceConfig,
+    selectedDice,
+    startedAt: Date.now(),
+  });
 }
 
 async function handleThrowFrame(userId: number, frame: any): Promise<void> {
@@ -1499,7 +1824,14 @@ async function handleThrowEnd(userId: number, finalResult: { dice1: number; dice
     playerId: userId,
     finalResult
   }, userId);
-  
+
+  // Throw is over — drop the active-throw record so a later reconnect
+  // doesn't replay a stale start.
+  const active = activeThrows.get(conn.lobbyId);
+  if (active && active.playerId === userId) {
+    activeThrows.delete(conn.lobbyId);
+  }
+
   // For game logic that needs full lobby data, load it only if needed
   const needsFullLobbyData = lobbyStatus.gameMode !== 'free_roll';
   
@@ -2073,6 +2405,11 @@ function broadcastTurnChange(lobbyId: string, playerId: number): void {
 }
 
 export function handleDisconnect(userId: number): void {
+  // Pop the player out of the matchmaking queue first — they're gone,
+  // no point trying to match them. Safe to call even if they weren't
+  // queued.
+  matchmaking.handleDisconnect(userId);
+
   const conn = connections.getConnection(userId);
   if (conn) {
     console.log(`User ${conn.user.nickname} (${userId}) disconnected`);
@@ -2498,4 +2835,27 @@ async function handleSendReaction(userId: number, content: string): Promise<void
   broadcastToLobby(conn.lobbyId, reactionMessage, userId);
   
   logger.info('Reaction sent', { userId, lobbyId: conn.lobbyId, content });
+}
+
+// === Player stats (Yandex profile widget / matchmaking level) ===
+async function handleSyncYandexPips(userId: number, pips: number): Promise<void> {
+  const result = await query<{ id: number }>(
+    `UPDATE users
+       SET pips = $2
+     WHERE id = $1 AND platform = 'yandex' AND COALESCE(pips, 0) = 0
+     RETURNING id`,
+    [userId, pips],
+  );
+
+  if (result.rows.length === 0) return;
+  await handleGetPlayerStats(userId);
+}
+
+async function handleGetPlayerStats(userId: number): Promise<void> {
+  const stats = await getPlayerStats(userId);
+  if (!stats) {
+    connections.send(userId, { type: 'player_stats', stats: null });
+    return;
+  }
+  connections.send(userId, { type: 'player_stats', stats });
 }

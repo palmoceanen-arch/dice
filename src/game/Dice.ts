@@ -38,11 +38,41 @@ const DEFAULT_CONFIG: DiceConfig = {
   bevelRadius: 0.16, // Match classic_white preset
 };
 
+// Merge an incoming partial dice config with DEFAULT_CONFIG without
+// letting `undefined` properties overwrite the defaults. The plain
+// `{ ...DEFAULT_CONFIG, ...input }` spread copies even explicitly-
+// `undefined` keys, which means a config like `{ opacity: undefined }`
+// (produced when a preset omits `opacity`) ends up wiping the default
+// `opacity: 1`. That makes THREE log `parameter 'opacity' has value of
+// undefined` and breaks dice rendering for opponents whose dice preset
+// doesn't have every optional field.
+function mergeDiceConfig(input: DiceConfig): DiceConfig {
+  const merged: DiceConfig = { ...DEFAULT_CONFIG };
+  for (const key of Object.keys(input) as (keyof DiceConfig)[]) {
+    const value = input[key];
+    if (value !== undefined) {
+      (merged as Record<string, unknown>)[key as string] = value;
+    }
+  }
+  return merged;
+}
+
+// Selection outline color (Palmo's Dice reroll selection).
+const OUTLINE_COLOR = 0xFFD700;
+const OUTLINE_SCALE = 1.08;
+
 export class Dice {
   mesh: THREE.Mesh;
   body: CANNON.Body;
   private config: DiceConfig;
-  
+  // Glow-outline child mesh used to highlight per-die selection (Palmo's
+  // Dice reroll). Hidden by default. We use a slightly larger, back-face
+  // rendered shell so the dice's own materials (which are pooled in
+  // `Dice.materialCache` and therefore shared across instances) stay
+  // untouched — toggling selection on one die does not bleed into others.
+  private outlineMesh: THREE.Mesh;
+  private selected = false;
+
   // Interpolation state
   private prevPosition = new THREE.Vector3();
   private prevQuaternion = new THREE.Quaternion();
@@ -60,7 +90,7 @@ export class Dice {
   }
   
   constructor(scene: THREE.Scene, world: CANNON.World, material?: CANNON.Material, config?: DiceConfig, bevelSegments: number = 3) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = config ? mergeDiceConfig(config) : { ...DEFAULT_CONFIG };
     
     const bevelRadius = this.config.bevelRadius;
     const size = Dice.getSizeForBevel(bevelRadius);
@@ -78,6 +108,9 @@ export class Dice {
     this.mesh = new THREE.Mesh(geometry, materials);
     this.mesh.castShadow = true;
     scene.add(this.mesh);
+
+    this.outlineMesh = this.buildOutlineMesh(bevelRadius ?? DEFAULT_CONFIG.bevelRadius!);
+    this.mesh.add(this.outlineMesh);
     
     // Cannon.js body - keep simple box for physics (no rounded corners)
     const halfSize = Dice.BASE_SIZE / 2;
@@ -103,7 +136,7 @@ export class Dice {
   // Check if config is different from current (to avoid unnecessary updates)
   private isConfigDifferent(newConfig: DiceConfig): boolean {
     const current = this.config;
-    const merged = { ...DEFAULT_CONFIG, ...newConfig };
+    const merged = mergeDiceConfig(newConfig);
     
     // Compare all relevant properties
     return (
@@ -126,14 +159,12 @@ export class Dice {
   updateConfig(config: DiceConfig, bevelSegments: number = 3) {
     // Skip update if config is the same (avoid expensive material recreation)
     if (!this.isConfigDifferent(config)) {
-      console.log('[Dice] Config unchanged, skipping update');
       return;
     }
     
-    console.log('[Dice] Updating config (config changed)');
     
     const oldBevelRadius = this.config.bevelRadius;
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = mergeDiceConfig(config);
     
     // Recreate geometry if bevelRadius changed
     if (this.config.bevelRadius !== oldBevelRadius) {
@@ -147,6 +178,9 @@ export class Dice {
       
       this.mesh.geometry = newGeometry;
       oldGeometry.dispose();
+
+      // Keep the selection outline shell sized to the new dice geometry.
+      this.rebuildOutlineMesh(bevelRadius ?? DEFAULT_CONFIG.bevelRadius!);
     }
     
     // Try to get materials from cache
@@ -155,11 +189,9 @@ export class Dice {
     
     if (!newMaterials) {
       // Create new materials and cache them
-      console.log('[Dice] Creating and caching new materials');
       newMaterials = this.createMaterials();
       Dice.materialCache.set(cacheKey, newMaterials);
     } else {
-      console.log('[Dice] Using cached materials');
     }
     
     // Dispose old materials only if they're not in cache
@@ -539,5 +571,47 @@ export class Dice {
   // Get current dice configuration
   getConfig(): DiceConfig {
     return { ...this.config };
+  }
+
+  // Build the selection-outline shell. The outline sits as a child of the
+  // dice mesh so it inherits all transforms automatically; it renders a
+  // back-facing, slightly inflated copy of the dice in a flat gold colour
+  // so only a rim is visible around the silhouette. depthWrite is off so
+  // it doesn't fight with the dice's own depth.
+  private buildOutlineMesh(bevelRadius: number): THREE.Mesh {
+    const size = Dice.getSizeForBevel(bevelRadius) * OUTLINE_SCALE;
+    const geometry = new RoundedBoxGeometry(size, size, size, 1, bevelRadius);
+    const material = new THREE.MeshBasicMaterial({
+      color: OUTLINE_COLOR,
+      side: THREE.BackSide,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.visible = this.selected;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    return mesh;
+  }
+
+  // Recreate the outline when the dice's own bevel radius changes (the
+  // existing outline geometry no longer matches the new dice silhouette).
+  private rebuildOutlineMesh(bevelRadius: number): void {
+    const oldGeometry = this.outlineMesh.geometry;
+    const size = Dice.getSizeForBevel(bevelRadius) * OUTLINE_SCALE;
+    this.outlineMesh.geometry = new RoundedBoxGeometry(size, size, size, 1, bevelRadius);
+    oldGeometry.dispose();
+  }
+
+  // Show / hide the selection outline for this die.
+  setSelected(selected: boolean): void {
+    this.selected = selected;
+    this.outlineMesh.visible = selected;
+  }
+
+  isSelected(): boolean {
+    return this.selected;
   }
 }

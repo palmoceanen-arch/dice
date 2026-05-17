@@ -1,6 +1,17 @@
 import type { WebSocket } from 'ws';
 import type { User } from '../types/index.js';
 
+// Snapshot of an item config supplied by the client (currently only the
+// Yandex Games build, which keeps inventory in Cloud Save rather than in
+// the server DB). When set, the server uses this in place of the DB
+// `item_catalog` row for multiplayer broadcasts so opponents render the
+// dice/table/effect skin the player actually picked locally.
+export interface ClientItemOverride {
+  code: string;
+  name: string;
+  config: Record<string, unknown> | null;
+}
+
 export interface Connection {
   ws: WebSocket;
   user: User;
@@ -8,6 +19,15 @@ export interface Connection {
   inGame: boolean;
   connectionHealth: 'good' | 'unstable' | 'poor';
   lastPongTime: number;
+  // Per-slot client overrides. Optional — when absent the server falls
+  // back to `user.equippedDiceId` / etc. (the Telegram flow). The
+  // Yandex client sends `set_player_items` after auth and after every
+  // local equip change to keep these in sync with Cloud Save.
+  clientItems?: {
+    dice?: ClientItemOverride | null;
+    table?: ClientItemOverride | null;
+    effect?: ClientItemOverride | null;
+  };
 }
 
 // Map oderId -> Connection
@@ -31,13 +51,17 @@ export function addConnection(user: User, ws: WebSocket): void {
     connectionHealth: 'good',
     lastPongTime: Date.now()
   });
-  userIdByTelegramId.set(user.telegramId, user.id);
+  if (user.telegramId !== null && user.telegramId !== undefined) {
+    userIdByTelegramId.set(user.telegramId, user.id);
+  }
 }
 
 export function removeConnection(userId: number): void {
   const conn = connections.get(userId);
   if (conn) {
-    userIdByTelegramId.delete(conn.user.telegramId);
+    if (conn.user.telegramId !== null && conn.user.telegramId !== undefined) {
+      userIdByTelegramId.delete(conn.user.telegramId);
+    }
     connections.delete(userId);
   }
 }
@@ -65,6 +89,30 @@ export function updateUserEquipment(userId: number, slot: 'dice' | 'table' | 'ef
       conn.user.equippedEffectId = itemId;
     }
   }
+}
+
+// Set or clear a client-supplied item override on the connection. Passing
+// `override === null` clears that slot; passing `undefined` leaves it
+// alone. See `Connection.clientItems` for the rationale.
+export function setClientItemOverride(
+  userId: number,
+  slot: 'dice' | 'table' | 'effect',
+  override: ClientItemOverride | null | undefined,
+): void {
+  if (override === undefined) return;
+  const conn = connections.get(userId);
+  if (!conn) return;
+  if (!conn.clientItems) {
+    conn.clientItems = {};
+  }
+  conn.clientItems[slot] = override;
+}
+
+export function getClientItemOverride(
+  userId: number,
+  slot: 'dice' | 'table' | 'effect',
+): ClientItemOverride | null | undefined {
+  return connections.get(userId)?.clientItems?.[slot];
 }
 
 export function setLobby(userId: number, lobbyId: string | null): void {
