@@ -587,10 +587,12 @@ export class Dice {
       transparent: true,
       opacity: 0.95,
       depthWrite: false,
+      depthTest: false,
       toneMapped: false,
     });
     const mesh = new THREE.Mesh(geometry, material);
     mesh.visible = this.selected;
+    mesh.renderOrder = 999;
     mesh.castShadow = false;
     mesh.receiveShadow = false;
     return mesh;

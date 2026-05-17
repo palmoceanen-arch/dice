@@ -3274,7 +3274,14 @@ export class Game {
     }
     if (this.diceInHand) {
       (window as any).debugLog?.('PALMOS', 'Dice in hand, ignoring click');
-      return; // Can't select dice in hand
+      return;
+    }
+
+    // Block selection while dice are still moving (e.g. during replay).
+    const allSettled = this.dice.every(d => d.body.sleepState === CANNON.Body.SLEEPING || d.body.type === CANNON.Body.STATIC);
+    if (!allSettled) {
+      (window as any).debugLog?.('PALMOS', 'Dice not settled, ignoring click');
+      return;
     }
     
     // Calculate mouse position in normalized device coordinates (-1 to +1)
