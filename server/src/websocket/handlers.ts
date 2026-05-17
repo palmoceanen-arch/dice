@@ -1116,8 +1116,31 @@ async function handleRestartGame(userId: number): Promise<void> {
   }
   
   const lobbyData = await lobby.getLobby(conn.lobbyId);
-  if (!lobbyData || lobbyData.hostId !== userId) {
-    connections.send(userId, { type: 'error', message: 'Only host can restart the game' });
+  if (!lobbyData) {
+    connections.send(userId, { type: 'error', message: 'Lobby not found' });
+    return;
+  }
+  
+  // Any player in the lobby can request a rematch — not just the host. This
+  // mirrors what the client now exposes (Rematch button visible for everyone)
+  // and prevents the second player being stuck on an Exit-only screen.
+  const isInLobby = lobbyData.players.some((p: { user: { id: number } }) => p.user.id === userId);
+  if (!isInLobby) {
+    connections.send(userId, { type: 'error', message: 'You are not in this lobby' });
+    return;
+  }
+  
+  // Idempotency: if betting is already initialized for this lobby (because
+  // another player already pressed Rematch), just re-send the betting UI to
+  // the requester rather than re-initializing and wiping existing bets.
+  if (BettingManager.isActive(conn.lobbyId)) {
+    const balance = await getUserPips(userId);
+    const state = BettingManager.getState(conn.lobbyId);
+    connections.send(userId, {
+      type: 'show_betting_ui',
+      minBet: state?.minBet ?? 10,
+      balance,
+    });
     return;
   }
   

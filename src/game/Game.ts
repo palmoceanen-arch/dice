@@ -176,6 +176,8 @@ export class Game {
   private selectedDiceForReroll: Set<number> = new Set();
   private diceSelectionEnabled = false;
   private lastRerollSelection: number[] = []; // Store last reroll selection for streaming
+  // Outline meshes for selected dice (rendered through floor)
+  private diceOutlineMeshes: Map<number, THREE.LineSegments> = new Map();
   
   private isHolding = false;
   private shakeIntensity = 0;
@@ -693,12 +695,9 @@ export class Game {
       6, // ширина
       3  // высота
     );
-    
-    // Load pips from localStorage (will be synced with server)
-    const savedPips = localStorage.getItem('playerPips');
-    if (savedPips) {
-      this.wallText.setPips(parseInt(savedPips, 10));
-    }
+    // Pips are synced exclusively from the server (auth_success / pips_updated).
+    // We intentionally do NOT seed from localStorage to avoid desync between
+    // wall display and top-right corner.
     
     // Create dice
     // Don't load custom dice config at startup - it should only apply when user explicitly uses editor
@@ -2205,11 +2204,9 @@ export class Game {
         const currentPips = this.wallText!.getPips();
         const newPips = currentPips + finalEarnedPips;
         
-        // Instant update on client
+        // Instant update on client (server is source of truth and will
+        // confirm the new balance via solo_roll_complete response).
         this.wallText!.animateChange(newPips, 800);
-        
-        // Save to localStorage
-        localStorage.setItem('playerPips', newPips.toString());
         
         // Send to server for database sync (background)
         wsClient.send({
@@ -2810,6 +2807,17 @@ export class Game {
     });
   }
   
+  // Public: move dice off-screen because another player's turn is starting.
+  // Called by GameSync when it's not our turn (e.g. after a take in Palmo's
+  // Dice or when reconnecting mid-game). The actual dice positions for the
+  // active player will arrive via the throw_start / throw_frame stream.
+  public teleportDiceToNextPlayer(_nextPlayerId: number) {
+    // Clear any selection visuals from the previous turn first
+    this.clearDiceSelection();
+    this.disableDiceSelection();
+    this.hideDice();
+  }
+  
   // Set callback to check if menu is open
   public setMenuOpenCallback(callback: () => boolean) {
     this.isMenuOpenCallback = callback;
@@ -3171,6 +3179,9 @@ export class Game {
   }
   
   // Pips management methods
+  // Server is the single source of truth. We never persist pips to
+  // localStorage so the wall display always reflects the latest value
+  // pushed from the server.
   public getPips(): number {
     return this.wallText?.getPips() ?? 0;
   }
@@ -3178,7 +3189,6 @@ export class Game {
   public setPips(value: number) {
     if (this.wallText) {
       this.wallText.setPips(value);
-      localStorage.setItem('playerPips', value.toString());
     }
   }
   
@@ -3186,7 +3196,6 @@ export class Game {
     if (this.wallText) {
       const newValue = this.wallText.getPips() + amount;
       this.wallText.animateChange(newValue, 800);
-      localStorage.setItem('playerPips', newValue.toString());
     }
   }
   
@@ -3363,18 +3372,40 @@ export class Game {
     const dice = this.dice[diceIndex];
     if (!dice) return;
     
-    // Add visual highlight - glow effect
+    // Apply emissive glow to each face material (dice uses materials[])
     const mesh = dice.mesh;
-    
-    // Store original emissive if not already stored
-    if (!(mesh.material as any)._originalEmissive) {
-      (mesh.material as any)._originalEmissive = (mesh.material as THREE.MeshStandardMaterial).emissive.clone();
-      (mesh.material as any)._originalEmissiveIntensity = (mesh.material as THREE.MeshStandardMaterial).emissiveIntensity;
+    const mats = mesh.material as THREE.MeshStandardMaterial | THREE.MeshStandardMaterial[];
+    const matArr: THREE.MeshStandardMaterial[] = Array.isArray(mats) ? mats : [mats];
+    for (const mat of matArr) {
+      if (!(mat as any)._originalEmissive) {
+        (mat as any)._originalEmissive = mat.emissive.clone();
+        (mat as any)._originalEmissiveIntensity = mat.emissiveIntensity;
+      }
+      mat.emissive.setHex(0xFFD700);
+      mat.emissiveIntensity = 0.6;
     }
     
-    // Set emissive glow (yellow/gold)
-    (mesh.material as THREE.MeshStandardMaterial).emissive.setHex(0xFFD700);
-    (mesh.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.5;
+    // Add gold wireframe outline that's visible through the floor.
+    // The outline is attached as a child of the dice mesh so it follows
+    // position/rotation automatically. depthTest=false makes it render on
+    // top of everything including the floor and the dice's own back faces,
+    // so the selection is visible even when the dice rests on the table.
+    if (!this.diceOutlineMeshes.has(diceIndex)) {
+      const edges = new THREE.EdgesGeometry(mesh.geometry);
+      const outlineMat = new THREE.LineBasicMaterial({
+        color: 0xFFD700,
+        depthTest: false,
+        depthWrite: false,
+        transparent: true,
+        opacity: 0.95,
+      });
+      const outline = new THREE.LineSegments(edges, outlineMat);
+      // Slightly inflate so the line sits just outside the dice surface
+      outline.scale.setScalar(1.04);
+      outline.renderOrder = 999;
+      mesh.add(outline);
+      this.diceOutlineMeshes.set(diceIndex, outline);
+    }
     
     // Play feedback
     this.audio.playDiceHit(0.3);
@@ -3386,12 +3417,22 @@ export class Game {
     if (!dice) return;
     
     const mesh = dice.mesh;
-    const material = mesh.material as THREE.MeshStandardMaterial;
+    const mats = mesh.material as THREE.MeshStandardMaterial | THREE.MeshStandardMaterial[];
+    const matArr: THREE.MeshStandardMaterial[] = Array.isArray(mats) ? mats : [mats];
+    for (const mat of matArr) {
+      if ((mat as any)._originalEmissive) {
+        mat.emissive.copy((mat as any)._originalEmissive);
+        mat.emissiveIntensity = (mat as any)._originalEmissiveIntensity || 0;
+      }
+    }
     
-    // Restore original emissive
-    if ((material as any)._originalEmissive) {
-      material.emissive.copy((material as any)._originalEmissive);
-      material.emissiveIntensity = (material as any)._originalEmissiveIntensity || 0;
+    // Remove outline mesh
+    const outline = this.diceOutlineMeshes.get(diceIndex);
+    if (outline) {
+      mesh.remove(outline);
+      outline.geometry.dispose();
+      (outline.material as THREE.LineBasicMaterial).dispose();
+      this.diceOutlineMeshes.delete(diceIndex);
     }
     
     // Play feedback

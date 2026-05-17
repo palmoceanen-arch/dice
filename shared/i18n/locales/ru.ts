@@ -368,6 +368,12 @@ export const ru: TranslationKeys = {
     
     // Palmo's Dice
     bust: '🔥 СГОРАНИЕ!',
+    
+    // Rematch dialog
+    rematch: 'Реванш',
+    exit: 'Выход',
+    bet: 'Ставка',
+    insufficientPips: 'недостаточно pips',
   },
 
   // Реакции
