@@ -676,7 +676,12 @@ export class GameSync {
         // Merge items into the lobby's availableItems list (de-duped by id)
         // so any code path that resolves configs through the lobby
         // (e.g. fallback in getPlayerDiceConfig) sees the new entries.
-        const lobby = (multiplayerUI as any)?.currentLobby;
+        // `multiplayerUI` lives on the window global (see main.ts) and is
+        // not in this module's lexical scope — referencing the bare name
+        // here would throw `ReferenceError: multiplayerUI is not defined`
+        // and abort the entire reconnect-config sync.
+        const multiplayerUI = (window as any).multiplayerUI;
+        const lobby = multiplayerUI?.currentLobby;
         if (lobby) {
           if (!Array.isArray(lobby.availableItems)) {
             lobby.availableItems = [];
@@ -686,6 +691,22 @@ export class GameSync {
             if (!known.has(item.id)) {
               lobby.availableItems.push(item);
               known.add(item.id);
+            }
+          }
+
+          // Refresh the reconnecting player's equipped slot ids on the
+          // lobby snapshot so `getPlayerDiceConfig`'s fallback path
+          // (which reads `currentLobby.players[].user.equippedDiceId`)
+          // resolves to the freshly-merged catalog entries.
+          if (Array.isArray(lobby.players)) {
+            const lobbyPlayer = lobby.players.find(
+              (p: any) => (p.oderId ?? p.userId) === data.oderId,
+            );
+            if (lobbyPlayer) {
+              if (!lobbyPlayer.user) lobbyPlayer.user = {};
+              if (data.equippedDiceId != null) lobbyPlayer.user.equippedDiceId = data.equippedDiceId;
+              if (data.equippedTableId != null) lobbyPlayer.user.equippedTableId = data.equippedTableId;
+              if (data.equippedEffectId != null) lobbyPlayer.user.equippedEffectId = data.equippedEffectId;
             }
           }
         }
