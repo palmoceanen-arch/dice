@@ -601,6 +601,13 @@ export class Dice {
     lines.renderOrder = 999;
     lines.castShadow = false;
     lines.receiveShadow = false;
+    // The outline is a child of the dice mesh and sits slightly outside
+    // the dice surface. `Raycaster.intersectObjects` recurses into
+    // children by default, and `LineSegments` raycasts use a generous
+    // distance threshold — so without this override clicks would hit the
+    // (invisible) outline edges before the dice itself and the click
+    // handler would fail to map the hit back to a Dice instance.
+    lines.raycast = () => {};
     return lines;
   }
 
