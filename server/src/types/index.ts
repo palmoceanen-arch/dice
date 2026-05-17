@@ -121,6 +121,7 @@ export interface Lobby {
   // is not allowed by the portal's compliance rules. Defaults to false
   // (classic Telegram behaviour).
   noBet: boolean;
+  betAmount: number;
   createdAt: Date;
   startedAt: Date | null;
   finishedAt: Date | null;

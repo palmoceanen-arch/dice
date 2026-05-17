@@ -66,14 +66,24 @@ const ANY_MAX_PLAYERS = 5;
 // `ANY_MAX_PLAYERS` first we seal immediately.
 const ANY_GATHER_EXTRA_MS = 8_000;
 
-// Delay between `mm_match_found` and the auto-start broadcast. Gives
-// the clients a beat to render the in-lobby screen / play the "match
-// found!" sound before dice start rolling.
-const MATCH_FOUND_GRACE_MS = 1_500;
+// How long every matched player has to confirm `mm_ready` before the
+// server cancels the match. A 10-second window is long enough to catch
+// a user who briefly tabbed away or stepped from the screen but short
+// enough that the ones who *are* ready don't sit on a stale "Ready?"
+// modal indefinitely. If everyone confirms earlier the match starts
+// immediately — the deadline is just the fallback.
+const READY_DEADLINE_MS = 10_000;
+
+// Extra delay between the last `mm_ready` (or the deadline elapsing
+// with everyone ready) and the actual `game_started` broadcast. Gives
+// the client a beat to render the lobby / play the "match found!"
+// sound before dice start rolling.
+const MATCH_START_GRACE_MS = 800;
 
 // How often the queue sweep runs. 1s is plenty — match found events are
 // rare and the sweep is O(n) where n is queued players.
 const SWEEP_INTERVAL_MS = 1_000;
+const QUEUE_TIMEOUT_MS = 90_000;
 
 interface QueueEntry {
   userId: number;
@@ -88,7 +98,27 @@ interface QueueEntry {
   minReachedAt?: number;
 }
 
+// State for a match that has been found but is still waiting on
+// `mm_ready` confirmations from every player. The match is finalized
+// (and `game_started` broadcast) when either everyone has confirmed or
+// the deadline elapses with everyone ready; otherwise the match is
+// cancelled, bets are refunded, and the players land back on the
+// matchmaking home screen.
+interface PendingMatch {
+  lobbyId: string;
+  userIds: number[];
+  readyIds: Set<number>;
+  gameMode: GameMode;
+  betAmount: number;
+  noBet: boolean;
+  deadline: number;
+  timer: ReturnType<typeof setTimeout>;
+  finalized: boolean;
+}
+
 const queue = new Map<number, QueueEntry>();
+const pendingMatches = new Map<string, PendingMatch>();
+const pendingByUser = new Map<number, string>();
 let sweepTimer: ReturnType<typeof setInterval> | null = null;
 
 function ensureSweeper(): void {
@@ -233,6 +263,8 @@ function queueSizeForMode(mode: QueueMode): number {
 function sweep(): void {
   if (queue.size === 0) return;
   const now = Date.now();
+  expireTimedOutEntries(now);
+  if (queue.size === 0) return;
 
   // --- Duels ---------------------------------------------------------
   const duelEntries = Array.from(queue.values())
@@ -297,13 +329,25 @@ function sweep(): void {
   }
 }
 
+function expireTimedOutEntries(now: number): void {
+  for (const entry of queue.values()) {
+    if (now - entry.enqueuedAt < QUEUE_TIMEOUT_MS) continue;
+    queue.delete(entry.userId);
+    connections.send(entry.userId, {
+      type: 'mm_error',
+      code: 'timeout',
+      message: 'Matchmaking timed out. Try another bet or mode.',
+    });
+  }
+}
+
 async function startMatch(host: QueueEntry, others: QueueEntry[]): Promise<void> {
   const allUserIds = [host.userId, ...others.map((o) => o.userId)];
   const betAmount = host.betAmount;
   const noBet = betAmount === 0;
 
   try {
-    const created = await lobby.createLobby(host.userId, host.gameMode, noBet);
+    const created = await lobby.createLobby(host.userId, host.gameMode, noBet, betAmount);
     const lobbyId = created.id;
 
     // Add the other matched players. If any of them have since
@@ -368,6 +412,27 @@ async function startMatch(host: QueueEntry, others: QueueEntry[]): Promise<void>
     const lobbyData = await lobby.getLobby(lobbyId);
     const matchedUserIds = lobbyData?.players.map((p) => p.oderId) ?? allUserIds;
 
+    // Set up the pending-match record so we can wait for everyone to
+    // confirm `mm_ready`. The match is finalized either when everyone
+    // confirms or the deadline elapses (handled in `finalizePendingMatch`).
+    const pending: PendingMatch = {
+      lobbyId,
+      userIds: matchedUserIds,
+      readyIds: new Set(),
+      gameMode: host.gameMode,
+      betAmount,
+      noBet,
+      deadline: Date.now() + READY_DEADLINE_MS,
+      timer: setTimeout(() => {
+        void finalizePendingMatch(lobbyId);
+      }, READY_DEADLINE_MS),
+      finalized: false,
+    };
+    pendingMatches.set(lobbyId, pending);
+    for (const uid of matchedUserIds) {
+      pendingByUser.set(uid, lobbyId);
+    }
+
     for (const userId of matchedUserIds) {
       connections.send(userId, {
         type: 'mm_match_found',
@@ -376,14 +441,10 @@ async function startMatch(host: QueueEntry, others: QueueEntry[]): Promise<void>
         gameMode: host.gameMode,
         betAmount,
         pot: betAmount * matchedUserIds.length,
-        startsInMs: MATCH_FOUND_GRACE_MS,
+        readyDeadlineMs: READY_DEADLINE_MS,
+        totalCount: matchedUserIds.length,
       });
     }
-
-    // Auto-start after a short grace so clients can render the lobby.
-    setTimeout(() => {
-      void autoStartMatch(lobbyId, matchedUserIds, host.gameMode);
-    }, MATCH_FOUND_GRACE_MS);
   } catch (err) {
     logger.error('Matchmaking: failed to start match', err, {
       hostId: host.userId,
@@ -509,9 +570,144 @@ async function pickTableId(userId: number): Promise<number | null> {
 }
 
 /**
+ * Mark a player as ready for the pending match they were matched into.
+ * If all matched players are ready, the match starts immediately (rather
+ * than waiting for the deadline). No-op if the user isn't in a pending
+ * match — the client may send the signal late after the deadline has
+ * already cancelled the match, and that's fine.
+ */
+export function markReady(userId: number): void {
+  const lobbyId = pendingByUser.get(userId);
+  if (!lobbyId) return;
+  const pending = pendingMatches.get(lobbyId);
+  if (!pending || pending.finalized) return;
+  if (!pending.userIds.includes(userId)) return;
+  if (pending.readyIds.has(userId)) return;
+  pending.readyIds.add(userId);
+
+  // Mirror progress to every player in the match so each client can
+  // show "2/3 ready" UI without polling.
+  for (const otherId of pending.userIds) {
+    connections.send(otherId, {
+      type: 'mm_ready_state',
+      lobbyId: pending.lobbyId,
+      userId,
+      readyCount: pending.readyIds.size,
+      totalCount: pending.userIds.length,
+    });
+  }
+
+  // Everyone in — start the game.
+  if (pending.readyIds.size >= pending.userIds.length) {
+    clearTimeout(pending.timer);
+    // Give clients a beat to dismiss the "Ready?" modal before dice fly.
+    setTimeout(() => {
+      void finalizePendingMatch(lobbyId);
+    }, MATCH_START_GRACE_MS);
+  }
+}
+
+/**
+ * Called when the ready deadline elapses OR everyone has confirmed
+ * ready. Decides whether to start the game or cancel the match (and
+ * refund bets) based on how many players confirmed in time.
+ */
+async function finalizePendingMatch(lobbyId: string): Promise<void> {
+  const pending = pendingMatches.get(lobbyId);
+  if (!pending || pending.finalized) return;
+  pending.finalized = true;
+  clearTimeout(pending.timer);
+  pendingMatches.delete(lobbyId);
+  for (const uid of pending.userIds) {
+    if (pendingByUser.get(uid) === lobbyId) {
+      pendingByUser.delete(uid);
+    }
+  }
+
+  const allReady = pending.readyIds.size >= pending.userIds.length;
+  if (allReady) {
+    await autoStartMatch(lobbyId, pending.userIds, pending.gameMode);
+    return;
+  }
+
+  // Not everyone confirmed in time — cancel.
+  const unreadyIds = pending.userIds.filter((id) => !pending.readyIds.has(id));
+  await cancelPendingMatch(pending, 'not_ready', unreadyIds);
+}
+
+/**
+ * Tear down a pending match: refund any active bets, remove every
+ * player from the lobby (which deletes it), and notify clients with
+ * `mm_match_cancelled` so they can leave the "Ready?" modal.
+ */
+async function cancelPendingMatch(
+  pending: PendingMatch,
+  reason: 'not_ready' | 'disconnected' | 'declined',
+  unreadyIds: number[],
+): Promise<void> {
+  pending.finalized = true;
+  clearTimeout(pending.timer);
+  pendingMatches.delete(pending.lobbyId);
+  for (const uid of pending.userIds) {
+    if (pendingByUser.get(uid) === pending.lobbyId) {
+      pendingByUser.delete(uid);
+    }
+  }
+
+  // Refund every player's bet if there was one. We charged everyone in
+  // `startMatch` so everyone gets refunded — even the unready ones,
+  // since the match never started.
+  if (!pending.noBet) {
+    for (const uid of pending.userIds) {
+      try {
+        await BettingManager.refundBet(uid, pending.lobbyId);
+      } catch (err) {
+        logger.error('Matchmaking: refund failed during pending cancel', err, {
+          lobbyId: pending.lobbyId,
+          userId: uid,
+        });
+      }
+    }
+    BettingManager.cleanup(pending.lobbyId);
+  }
+
+  // Tear down the lobby so it doesn't leak.
+  for (const uid of pending.userIds) {
+    await safeLeaveLobby(pending.lobbyId, uid);
+  }
+
+  for (const uid of pending.userIds) {
+    connections.send(uid, {
+      type: 'mm_match_cancelled',
+      lobbyId: pending.lobbyId,
+      reason,
+      unreadyIds,
+      betAmount: pending.betAmount,
+    });
+  }
+
+  logger.info('Matchmaking: pending match cancelled', {
+    lobbyId: pending.lobbyId,
+    reason,
+    unreadyCount: unreadyIds.length,
+    totalCount: pending.userIds.length,
+  });
+}
+
+/**
  * Called when a user disconnects. Removes them from the queue silently
- * — no `mm_left` broadcast (they're gone, nothing to notify).
+ * — no `mm_left` broadcast (they're gone, nothing to notify). If they
+ * were in a pending match (post-`mm_match_found`, pre-`game_started`),
+ * the whole match is cancelled and the other players get a refund —
+ * playing 1×1 with a disconnected opponent is no game.
  */
 export function handleDisconnect(userId: number): void {
   queue.delete(userId);
+
+  const lobbyId = pendingByUser.get(userId);
+  if (!lobbyId) return;
+  const pending = pendingMatches.get(lobbyId);
+  if (!pending || pending.finalized) return;
+  // Fire-and-forget — the disconnect path itself isn't async.
+  void cancelPendingMatch(pending, 'disconnected', [userId]);
 }
