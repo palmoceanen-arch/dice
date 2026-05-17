@@ -57,20 +57,32 @@ function mergeDiceConfig(input: DiceConfig): DiceConfig {
   return merged;
 }
 
-// Selection outline color (Palmo's Dice reroll selection).
+// Selection outline (Palmo's Dice reroll selection). Implemented as an
+// "inverted hull" silhouette: a slightly inflated copy of the die
+// rendered with BackSide so only the rim peeks out around the die's
+// own front faces. Two passes:
+//   • main:  depthTest=true,  opacity=1   — clean rim, only visible
+//             where the inflated back-face is in front of everything
+//             (so the back-edges of the cube do NOT show through).
+//   • ghost: depthTest=false, opacity≈0.35 — same shell drawn through
+//             the table / other dice so the selection stays
+//             discoverable when occluded.
 const OUTLINE_COLOR = 0xFFD700;
-const OUTLINE_SCALE = 1.08;
+const OUTLINE_SCALE = 1.06;
+const OUTLINE_GHOST_OPACITY = 0.35;
 
 export class Dice {
   mesh: THREE.Mesh;
   body: CANNON.Body;
   private config: DiceConfig;
-  // Glow-outline child mesh used to highlight per-die selection (Palmo's
-  // Dice reroll). Hidden by default. We use a slightly larger, back-face
-  // rendered shell so the dice's own materials (which are pooled in
-  // `Dice.materialCache` and therefore shared across instances) stay
-  // untouched — toggling selection on one die does not bleed into others.
-  private outlineMesh: THREE.Mesh;
+  // Glow-outline child group used to highlight per-die selection (Palmo's
+  // Dice reroll). Hidden by default. The two inverted-hull passes are
+  // grouped under one Object3D so they inherit the dice transform and
+  // can be toggled together. The dice's own materials are pooled in
+  // `Dice.materialCache` and therefore shared across instances, so we
+  // can't tint the dice itself without bleeding into siblings — a
+  // per-instance child outline keeps the highlight isolated.
+  private outlineMesh: THREE.Group;
   private selected = false;
 
   // Interpolation state
@@ -573,36 +585,77 @@ export class Dice {
     return { ...this.config };
   }
 
-  // Build the selection-outline shell. The outline sits as a child of the
-  // dice mesh so it inherits all transforms automatically; it renders a
-  // back-facing, slightly inflated copy of the dice in a flat gold colour
-  // so only a rim is visible around the silhouette. depthWrite is off so
-  // it doesn't fight with the dice's own depth.
-  private buildOutlineMesh(bevelRadius: number): THREE.Mesh {
-    const size = Dice.getSizeForBevel(bevelRadius) * OUTLINE_SCALE;
-    const geometry = new RoundedBoxGeometry(size, size, size, 1, bevelRadius);
-    const material = new THREE.MeshBasicMaterial({
+  // Build the silhouette outline. The group sits as a child of the dice
+  // mesh so it inherits all transforms automatically. We render an
+  // inflated rounded-box twice with BackSide:
+  //   • ghost pass first (depthTest=false, low opacity) so a faint rim
+  //     stays visible through the table / other dice;
+  //   • main pass second (depthTest=true, full opacity) so a crisp rim
+  //     shows on the visible side and the cube's back edges stay
+  //     hidden behind the die's own front faces.
+  private buildOutlineMesh(bevelRadius: number): THREE.Group {
+    const group = new THREE.Group();
+    const geometry = this.buildOutlineGeometry(bevelRadius);
+
+    const ghostMaterial = new THREE.MeshBasicMaterial({
       color: OUTLINE_COLOR,
       side: THREE.BackSide,
       transparent: true,
-      opacity: 0.95,
+      opacity: OUTLINE_GHOST_OPACITY,
       depthWrite: false,
+      depthTest: false,
       toneMapped: false,
     });
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.visible = this.selected;
-    mesh.castShadow = false;
-    mesh.receiveShadow = false;
-    return mesh;
+    const ghostMesh = new THREE.Mesh(geometry, ghostMaterial);
+    ghostMesh.renderOrder = 998;
+    ghostMesh.castShadow = false;
+    ghostMesh.receiveShadow = false;
+    // Raycaster.intersectObjects recurses into children; without this
+    // override clicks could hit the inflated outline before the dice.
+    ghostMesh.raycast = () => {};
+    group.add(ghostMesh);
+
+    const mainMaterial = new THREE.MeshBasicMaterial({
+      color: OUTLINE_COLOR,
+      side: THREE.BackSide,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+      depthTest: true,
+      toneMapped: false,
+    });
+    const mainMesh = new THREE.Mesh(geometry, mainMaterial);
+    mainMesh.renderOrder = 999;
+    mainMesh.castShadow = false;
+    mainMesh.receiveShadow = false;
+    mainMesh.raycast = () => {};
+    group.add(mainMesh);
+
+    group.visible = this.selected;
+    return group;
+  }
+
+  // Build the inflated rounded-box geometry shared by both outline
+  // passes. Matches the dice's own bevel so the silhouette follows the
+  // rounded corners.
+  private buildOutlineGeometry(bevelRadius: number): THREE.BufferGeometry {
+    const size = Dice.getSizeForBevel(bevelRadius) * OUTLINE_SCALE;
+    return new RoundedBoxGeometry(size, size, size, 2, bevelRadius);
   }
 
   // Recreate the outline when the dice's own bevel radius changes (the
   // existing outline geometry no longer matches the new dice silhouette).
+  // Both pass meshes share the same geometry, so we swap and dispose once.
   private rebuildOutlineMesh(bevelRadius: number): void {
-    const oldGeometry = this.outlineMesh.geometry;
-    const size = Dice.getSizeForBevel(bevelRadius) * OUTLINE_SCALE;
-    this.outlineMesh.geometry = new RoundedBoxGeometry(size, size, size, 1, bevelRadius);
-    oldGeometry.dispose();
+    const newGeometry = this.buildOutlineGeometry(bevelRadius);
+    let oldGeometry: THREE.BufferGeometry | null = null;
+    for (const child of this.outlineMesh.children) {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.isMesh) continue;
+      if (!oldGeometry) oldGeometry = mesh.geometry;
+      mesh.geometry = newGeometry;
+    }
+    oldGeometry?.dispose();
   }
 
   // Show / hide the selection outline for this die.

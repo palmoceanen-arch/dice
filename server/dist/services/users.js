@@ -4,7 +4,11 @@ import { generateReferralCode, processReferral } from './referrals.js';
 import { logger } from '../utils/logger.js';
 // Generate unique nickname
 async function generateNickname(baseName) {
-    const clean = baseName.replace(/[^a-zA-Z0-9]/g, '').substring(0, 20);
+    // Keep letters (incl. Cyrillic and other Unicode scripts) and digits.
+    // The previous /[^a-zA-Z0-9]/g pattern stripped every Cyrillic character, so
+    // Yandex players named e.g. "Павел Слонов" ended up with the generic
+    // fallback "Player". `\p{L}` keeps any Unicode letter, `\p{N}` any digit.
+    const clean = baseName.replace(/[^\p{L}\p{N}]/gu, '').substring(0, 20);
     const base = clean || 'Player';
     // Try base name first
     const existing = await query('SELECT nickname FROM users WHERE nickname = $1', [base]);
@@ -57,6 +61,59 @@ export async function findOrCreateUser(telegramUser, referralCode) {
     }
     return user;
 }
+// findOrCreate for Yandex Games players. Mirrors findOrCreateUser, but keyed
+// on yandex_id (string UUID) and stores `platform='yandex'`. Yandex users
+// have no Telegram username or referrals (the multiplayer Yandex MVP
+// intentionally skips the referral system), but they still receive default
+// items so their first lobby is playable.
+export async function findOrCreateYandexUser(player) {
+    // Yandex player display name can be empty (`""`) — fall back to a generic
+    // "Player" base so the nickname generator does not blow up.
+    const displayName = (player.publicName && player.publicName.trim().length > 0)
+        ? player.publicName.trim()
+        : 'Player';
+    const avatarUrl = player.avatarUrlMedium
+        || player.avatarUrlLarge
+        || player.avatarUrlSmall
+        || null;
+    const existingUser = await query('SELECT * FROM users WHERE yandex_id = $1', [player.uuid]);
+    const isNewUser = existingUser.rows.length === 0;
+    // `users.yandex_id` is guarded by a *partial* unique index
+    // (`WHERE yandex_id IS NOT NULL`), so `ON CONFLICT (yandex_id)` alone
+    // doesn't match a constraint. We need to either specify the predicate
+    // in the ON CONFLICT clause or split the upsert. We split it because
+    // it's simpler and avoids relying on the partial-index conflict syntax.
+    let result;
+    if (isNewUser) {
+        result = await query(`INSERT INTO users (yandex_id, platform, nickname, first_name, avatar_url, last_online)
+       VALUES ($1, 'yandex', $2, $3, $4, NOW())
+       RETURNING *`, [
+            player.uuid,
+            await generateNickname(displayName),
+            displayName,
+            avatarUrl,
+        ]);
+    }
+    else {
+        result = await query(`UPDATE users
+         SET last_online = NOW(),
+             first_name = $2,
+             avatar_url = $3
+       WHERE yandex_id = $1
+       RETURNING *`, [player.uuid, displayName, avatarUrl]);
+    }
+    const user = mapUser(result.rows[0]);
+    // Grant default items on first sign-in so the user lands in a usable state.
+    const hasItems = await query('SELECT COUNT(*) as count FROM user_items WHERE user_id = $1', [user.id]);
+    if (parseInt(hasItems.rows[0].count) === 0) {
+        await grantDefaultItems(user.id);
+    }
+    return user;
+}
+export async function getUserByYandexId(yandexId) {
+    const result = await query('SELECT * FROM users WHERE yandex_id = $1', [yandexId]);
+    return result.rows.length > 0 ? mapUser(result.rows[0]) : null;
+}
 async function grantDefaultItems(userId) {
     // Grant specific default items by code (not all free items)
     const defaultCodes = ['classic_white', 'classic_black', 'classic_red', 'green_felt', 'none'];
@@ -99,11 +156,12 @@ export async function getUserByUsername(username) {
     return result.rows.length > 0 ? mapUser(result.rows[0]) : null;
 }
 export async function setNickname(userId, nickname) {
-    // Validate nickname
+    // Validate nickname. Unicode letters/digits + underscore so Cyrillic / CJK /
+    // accented names round-trip through the editor (matches generateNickname()).
     if (nickname.length < 3 || nickname.length > 32) {
         return false;
     }
-    if (!/^[a-zA-Z0-9_]+$/.test(nickname)) {
+    if (!/^[\p{L}\p{N}_]+$/u.test(nickname)) {
         return false;
     }
     try {
@@ -173,9 +231,14 @@ export async function getUserPips(userId) {
 // Map database row to User type (snake_case to camelCase)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mapUser(row) {
+    const platform = row.platform === 'yandex' ? 'yandex' : 'telegram';
     return {
         id: row.id,
-        telegramId: row.telegram_id,
+        telegramId: row.telegram_id === null || row.telegram_id === undefined
+            ? null
+            : row.telegram_id,
+        yandexId: row.yandex_id ?? null,
+        platform,
         nickname: row.nickname,
         telegramUsername: row.telegram_username,
         firstName: row.first_name,
@@ -185,6 +248,11 @@ function mapUser(row) {
         equippedEffectId: row.equipped_effect_id,
         referralCode: row.referral_code,
         pips: row.pips ? parseInt(row.pips, 10) : 0,
+        xp: row.xp == null ? 0 : parseInt(row.xp, 10),
+        level: row.level == null ? 1 : parseInt(row.level, 10),
+        gamesPlayed: row.games_played == null ? 0 : parseInt(row.games_played, 10),
+        wins: row.wins == null ? 0 : parseInt(row.wins, 10),
+        losses: row.losses == null ? 0 : parseInt(row.losses, 10),
         lastOnline: new Date(row.last_online),
         createdAt: new Date(row.created_at),
     };

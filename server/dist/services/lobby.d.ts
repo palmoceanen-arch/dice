@@ -6,10 +6,17 @@ export declare function getLobbyStatusCached(lobbyId: string): {
     gameMode: GameMode;
 } | null;
 export declare function getDiceConfig(diceId: number): Promise<Record<string, unknown> | null>;
-export declare function createLobby(hostId: number, gameMode: GameMode): Promise<Lobby>;
+export declare function createLobby(hostId: number, gameMode: GameMode, noBet?: boolean, betAmount?: number): Promise<Lobby>;
+export declare function isNoBetLobby(lobbyId: string): boolean;
+export declare function getLobbyBetAmount(lobbyId: string): number;
 export declare function getLobby(lobbyId: string): Promise<LobbyWithPlayers | null>;
 export declare function joinLobby(lobbyId: string, userId: number): Promise<boolean>;
-export declare function leaveLobby(lobbyId: string, userId: number): Promise<boolean>;
+export interface LeaveLobbyResult {
+    closed: boolean;
+    closedReason?: 'empty' | 'insufficient_players';
+    remainingPlayers: number[];
+}
+export declare function leaveLobby(lobbyId: string, userId: number): Promise<LeaveLobbyResult>;
 export declare function closeLobby(lobbyId: string): Promise<void>;
 export declare function getPendingInvitationUsers(lobbyId: string): Promise<number[]>;
 export declare function voteTable(lobbyId: string, userId: number, tableId: number): Promise<boolean>;
@@ -33,6 +40,10 @@ export declare function respondToInvitation(invitationId: number, accept: boolea
     toUserId: number | null;
 }>;
 export declare function getLobbyPlayers(lobbyId: string): number[];
+export declare function addRestartVote(lobbyId: string, userId: number): void;
+export declare function removeRestartVote(lobbyId: string, userId: number): void;
+export declare function getRestartVotes(lobbyId: string): number[];
+export declare function clearRestartVotes(lobbyId: string): void;
 export declare function setPlayerScreenSize(lobbyId: string, userId: number, width: number, height: number): void;
 export declare function getMinAspectRatio(lobbyId: string): number | null;
 export declare function markPlayerDisconnected(lobbyId: string, userId: number): void;

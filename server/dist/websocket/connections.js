@@ -16,12 +16,16 @@ export function addConnection(user, ws) {
         connectionHealth: 'good',
         lastPongTime: Date.now()
     });
-    userIdByTelegramId.set(user.telegramId, user.id);
+    if (user.telegramId !== null && user.telegramId !== undefined) {
+        userIdByTelegramId.set(user.telegramId, user.id);
+    }
 }
 export function removeConnection(userId) {
     const conn = connections.get(userId);
     if (conn) {
-        userIdByTelegramId.delete(conn.user.telegramId);
+        if (conn.user.telegramId !== null && conn.user.telegramId !== undefined) {
+            userIdByTelegramId.delete(conn.user.telegramId);
+        }
         connections.delete(userId);
     }
 }
@@ -47,6 +51,23 @@ export function updateUserEquipment(userId, slot, itemId) {
             conn.user.equippedEffectId = itemId;
         }
     }
+}
+// Set or clear a client-supplied item override on the connection. Passing
+// `override === null` clears that slot; passing `undefined` leaves it
+// alone. See `Connection.clientItems` for the rationale.
+export function setClientItemOverride(userId, slot, override) {
+    if (override === undefined)
+        return;
+    const conn = connections.get(userId);
+    if (!conn)
+        return;
+    if (!conn.clientItems) {
+        conn.clientItems = {};
+    }
+    conn.clientItems[slot] = override;
+}
+export function getClientItemOverride(userId, slot) {
+    return connections.get(userId)?.clientItems?.[slot];
 }
 export function setLobby(userId, lobbyId) {
     const conn = connections.get(userId);

@@ -49,11 +49,11 @@ export async function getDiceConfig(diceId) {
     diceConfigCache.set(diceId, config);
     return config;
 }
-export async function createLobby(hostId, gameMode) {
+export async function createLobby(hostId, gameMode, noBet = false, betAmount = noBet ? 0 : 10) {
     const id = nanoid(8);
-    const result = await query(`INSERT INTO lobbies (id, host_id, game_mode, status, max_players)
-     VALUES ($1, $2, $3, 'voting', $4)
-     RETURNING *`, [id, hostId, gameMode, MAX_PLAYERS]);
+    const result = await query(`INSERT INTO lobbies (id, host_id, game_mode, status, max_players, no_bet, bet_amount)
+     VALUES ($1, $2, $3, 'voting', $4, $5, $6)
+     RETURNING *`, [id, hostId, gameMode, MAX_PLAYERS, noBet, betAmount]);
     // Add host as player
     await query(`INSERT INTO lobby_players (lobby_id, user_id, status)
      VALUES ($1, $2, 'joined')`, [id, hostId]);
@@ -70,8 +70,20 @@ export async function createLobby(hostId, gameMode) {
         status: 'voting',
         gameMode,
         hostId,
+        noBet,
+        betAmount,
     });
-    return mapLobby(result.rows[0]);
+    return mapLobby(result.rows[0], betAmount);
+}
+// Fast accessor for the no-bet flag, used by handleStartGame / endGame in
+// hot paths where we want to avoid an extra DB round-trip.
+export function isNoBetLobby(lobbyId) {
+    const state = activeLobbies.get(lobbyId);
+    return !!state?.noBet;
+}
+export function getLobbyBetAmount(lobbyId) {
+    const state = activeLobbies.get(lobbyId);
+    return state?.betAmount ?? (state?.noBet ? 0 : 10);
 }
 export async function getLobby(lobbyId) {
     const lobbyResult = await query('SELECT * FROM lobbies WHERE id = $1', [lobbyId]);
@@ -84,7 +96,8 @@ export async function getLobby(lobbyId) {
      JOIN users u ON u.id = lp.user_id
      LEFT JOIN item_catalog ic ON ic.id = u.equipped_table_id AND ic.type = 'table'
      WHERE lp.lobby_id = $1 AND lp.status = 'joined'`, [lobbyId]);
-    const lobby = mapLobby(lobbyResult.rows[0]);
+    const lobbyState = activeLobbies.get(lobbyId);
+    const lobby = mapLobby(lobbyResult.rows[0], lobbyState?.betAmount);
     return {
         ...lobby,
         players: playersResult.rows.map(row => ({
@@ -96,6 +109,8 @@ export async function getLobby(lobbyId) {
             user: {
                 id: row.user_id,
                 telegramId: 0,
+                yandexId: null,
+                platform: 'telegram',
                 nickname: row.nickname,
                 telegramUsername: row.telegram_username,
                 firstName: null,
@@ -148,15 +163,42 @@ export async function leaveLobby(lobbyId, userId) {
     }
     // Update in-memory state
     const state = activeLobbies.get(lobbyId);
+    let closed = false;
+    let closedReason;
+    let remainingPlayers = [];
     if (state) {
         state.players.delete(userId);
         state.votes.delete(userId);
-        // If no players left, close lobby
+        // Drop this player's rematch vote (if any). Otherwise an opponent
+        // pressing "New Game" after we left would trip the "all players
+        // agreed" check with our stale vote still counted.
+        removeRestartVote(lobbyId, userId);
+        remainingPlayers = Array.from(state.players);
         if (state.players.size === 0) {
+            // Nobody is left → close the lobby outright.
             await closeLobby(lobbyId);
+            closed = true;
+            closedReason = 'empty';
+        }
+        else if (state.status === 'playing' && state.players.size < 2) {
+            // Game in progress but the match can no longer continue (fewer
+            // than 2 players left). Force-end it instead of letting the
+            // remaining player sit alone forever or, worse, restart a "new
+            // game" with themselves. Mirrors the timeout branch in
+            // `markPlayerDisconnected` further down this file.
+            for (const remainingUserId of state.players) {
+                const remainingConn = connections.getConnection(remainingUserId);
+                if (remainingConn) {
+                    remainingConn.lobbyId = null;
+                    remainingConn.inGame = false;
+                }
+            }
+            await closeLobby(lobbyId);
+            closed = true;
+            closedReason = 'insufficient_players';
         }
     }
-    return true;
+    return { closed, closedReason, remainingPlayers };
 }
 export async function closeLobby(lobbyId) {
     // Cancel all pending invitations for this lobby
@@ -288,6 +330,35 @@ export function getLobbyPlayers(lobbyId) {
     const state = activeLobbies.get(lobbyId);
     return state ? Array.from(state.players) : [];
 }
+// Rematch ("New Game") vote state per lobby. The post-game UI lets every
+// player vote on a rematch; the server only restarts when all currently
+// joined players have agreed. The vote set is cleared whenever a new
+// round actually starts (`clearRestartVotes`), a player leaves the
+// lobby, or the lobby itself closes.
+const restartVotes = new Map();
+export function addRestartVote(lobbyId, userId) {
+    let set = restartVotes.get(lobbyId);
+    if (!set) {
+        set = new Set();
+        restartVotes.set(lobbyId, set);
+    }
+    set.add(userId);
+}
+export function removeRestartVote(lobbyId, userId) {
+    const set = restartVotes.get(lobbyId);
+    if (!set)
+        return;
+    set.delete(userId);
+    if (set.size === 0)
+        restartVotes.delete(lobbyId);
+}
+export function getRestartVotes(lobbyId) {
+    const set = restartVotes.get(lobbyId);
+    return set ? Array.from(set) : [];
+}
+export function clearRestartVotes(lobbyId) {
+    restartVotes.delete(lobbyId);
+}
 export function setPlayerScreenSize(lobbyId, userId, width, height) {
     const state = activeLobbies.get(lobbyId);
     if (state) {
@@ -307,7 +378,9 @@ export function getMinAspectRatio(lobbyId) {
     }
     return minAspect === Infinity ? null : minAspect;
 }
-function mapLobby(row) {
+function mapLobby(row, betAmount) {
+    const noBet = row.no_bet === true;
+    const rowBetAmount = typeof row.bet_amount === 'number' ? row.bet_amount : undefined;
     return {
         id: row.id,
         hostId: row.host_id,
@@ -315,6 +388,8 @@ function mapLobby(row) {
         status: row.status,
         selectedTableId: row.selected_table_id,
         maxPlayers: row.max_players,
+        noBet,
+        betAmount: betAmount ?? rowBetAmount ?? (noBet ? 0 : 10),
         createdAt: new Date(row.created_at),
         startedAt: row.started_at ? new Date(row.started_at) : null,
         finishedAt: row.finished_at ? new Date(row.finished_at) : null,

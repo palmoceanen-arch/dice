@@ -615,10 +615,113 @@ export class GameSync {
       this.showNotification(`${nickname} отключился, ожидание переподключения…`);
     });
 
+    // Rematch vote progress. The server broadcasts this after every
+    // `restart_game` press so each client can update the "Waiting…"
+    // count on its post-game modal.
+    wsClient.on('restart_vote_update', (data: any) => {
+      if (!data) return;
+      const voted = Array.isArray(data.votedPlayerIds) ? data.votedPlayerIds.length : 0;
+      const total = typeof data.totalPlayers === 'number' ? data.totalPlayers : 0;
+      const btn = document.querySelector<HTMLButtonElement>(
+        'button[data-role="rematch"]'
+      );
+      if (!btn) return;
+      const meVoted = Array.isArray(data.votedPlayerIds) && wsClient.user?.id != null
+        ? data.votedPlayerIds.includes(wsClient.user.id)
+        : false;
+      if (meVoted) {
+        btn.disabled = true;
+        btn.style.opacity = '0.7';
+        btn.style.cursor = 'default';
+        btn.textContent = total > 0 ? `Waiting… ${voted}/${total}` : 'Waiting…';
+      } else {
+        btn.textContent = total > 0 ? `New Game (${voted}/${total})` : 'New Game';
+      }
+    });
+
+    // Rematch could not start (e.g. opponent ran out of pips). Re-enable
+    // the New Game button so the player can decide what to do next; the
+    // backend has already cleared the vote tally.
+    wsClient.on('restart_failed', (data: any) => {
+      const btn = document.querySelector<HTMLButtonElement>(
+        'button[data-role="rematch"]'
+      );
+      if (btn) {
+        btn.disabled = false;
+        btn.style.opacity = '1';
+        btn.style.cursor = 'pointer';
+        btn.textContent = 'New Game';
+      }
+      const message =
+        (data && typeof data.message === 'string' && data.message) ||
+        (data?.reason === 'insufficient_pips'
+          ? 'Not enough pips for the rematch bet'
+          : 'Could not start the rematch');
+      this.showNotification(message);
+    });
+
     wsClient.on('player_reconnected', (data: any) => {
       if (!data || data.oderId === wsClient.user?.id) return;
       const nickname = this.getPlayerNickname(data.oderId) || data.nickname || 'Игрок';
       this.showNotification(`${nickname} переподключился`);
+
+      // Server piggy-backs the reconnecting player's equipped items on
+      // `player_reconnected` so peers who were already in the lobby
+      // (i.e. joined BEFORE this player came back) can fill in the dice
+      // / table / effect configs they missed. Without this, after a
+      // both-disconnected scenario the first reconnector permanently
+      // renders the late arrival's dice in the default skin.
+      const incomingItems: any[] = Array.isArray(data.availableItems) ? data.availableItems : [];
+      if (incomingItems.length > 0) {
+        // Merge items into the lobby's availableItems list (de-duped by id)
+        // so any code path that resolves configs through the lobby
+        // (e.g. fallback in getPlayerDiceConfig) sees the new entries.
+        // `multiplayerUI` lives on the window global (see main.ts) and is
+        // not in this module's lexical scope — referencing the bare name
+        // here would throw `ReferenceError: multiplayerUI is not defined`
+        // and abort the entire reconnect-config sync.
+        const multiplayerUI = (window as any).multiplayerUI;
+        const lobby = multiplayerUI?.currentLobby;
+        if (lobby) {
+          if (!Array.isArray(lobby.availableItems)) {
+            lobby.availableItems = [];
+          }
+          const known = new Set<number>(lobby.availableItems.map((i: any) => i.id));
+          for (const item of incomingItems) {
+            if (!known.has(item.id)) {
+              lobby.availableItems.push(item);
+              known.add(item.id);
+            }
+          }
+
+          // Refresh the reconnecting player's equipped slot ids on the
+          // lobby snapshot so `getPlayerDiceConfig`'s fallback path
+          // (which reads `currentLobby.players[].user.equippedDiceId`)
+          // resolves to the freshly-merged catalog entries.
+          if (Array.isArray(lobby.players)) {
+            const lobbyPlayer = lobby.players.find(
+              (p: any) => (p.oderId ?? p.userId) === data.oderId,
+            );
+            if (lobbyPlayer) {
+              if (!lobbyPlayer.user) lobbyPlayer.user = {};
+              if (data.equippedDiceId != null) lobbyPlayer.user.equippedDiceId = data.equippedDiceId;
+              if (data.equippedTableId != null) lobbyPlayer.user.equippedTableId = data.equippedTableId;
+              if (data.equippedEffectId != null) lobbyPlayer.user.equippedEffectId = data.equippedEffectId;
+            }
+          }
+        }
+
+        // Update the per-player dice config cache directly so the next
+        // throw uses the correct colours without waiting for any other
+        // round-trip.
+        if (data.equippedDiceId) {
+          const diceConfig = this.getDiceConfigById(data.equippedDiceId, incomingItems);
+          if (diceConfig) {
+            this.gameState.playerDiceConfigs.set(data.oderId, diceConfig);
+            (window as any).debugLog?.('GAME', `Player ${data.oderId} dice config updated on reconnect`);
+          }
+        }
+      }
     });
   }
   
@@ -1776,16 +1879,24 @@ export class GameSync {
       font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     `;
 
-    if (wsClient.isHost) {
-      const newGameBtn = document.createElement('button');
-      newGameBtn.textContent = 'New Game';
-      newGameBtn.style.cssText = baseBtn + 'background: #4CAF50;';
-      newGameBtn.addEventListener('click', () => {
-        resultEl.remove();
-        wsClient.restartGame();
-      });
-      container.appendChild(newGameBtn);
-    }
+    // Every player now sees the "New Game" button; the server collects
+    // votes from all current lobby players and only restarts when
+    // everyone has agreed (and has enough pips for the current bet).
+    // Until then we leave the modal on screen so each side knows what
+    // to do — clicking the button just locks it into a "waiting" state.
+    const newGameBtn = document.createElement('button');
+    newGameBtn.textContent = 'New Game';
+    newGameBtn.style.cssText = baseBtn + 'background: #4CAF50;';
+    newGameBtn.dataset.role = 'rematch';
+    newGameBtn.addEventListener('click', () => {
+      if (newGameBtn.disabled) return;
+      newGameBtn.disabled = true;
+      newGameBtn.textContent = 'Waiting…';
+      newGameBtn.style.opacity = '0.7';
+      newGameBtn.style.cursor = 'default';
+      wsClient.restartGame();
+    });
+    container.appendChild(newGameBtn);
 
     const exitBtn = document.createElement('button');
     exitBtn.textContent = 'Exit';
@@ -1965,8 +2076,10 @@ export class GameSync {
     return this.gameState.gameMode;
   }
   
-  // Get dice config for a specific player (preloaded or from lobby)
-  private getPlayerDiceConfig(playerId: number): any | null {
+  // Get dice config for a specific player (preloaded or from lobby).
+  // Public so Game can re-skin the dice when teleporting them to the
+  // active player's slot on reconnect / turn change.
+  public getPlayerDiceConfig(playerId: number): any | null {
     (window as any).debugLog?.('DICE', `getPlayerDiceConfig(${playerId}) called`);
     
     // First try preloaded config (faster)

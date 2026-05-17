@@ -2,6 +2,7 @@ import { query } from '../db/client.js';
 import * as lobby from './lobby.js';
 import { BettingManager } from './betting.js';
 import { metricsCollector } from '../utils/metrics.js';
+import { recordGameResult } from './stats.js';
 import { registerGameMode, getGameMode, FreeRollMode, StreetCrapsMode, MexicoMode, GreedyPigMode, PalmosDiceMode, handleGreedyPigStop, getGreedyPigTurnScore, } from './gameModes/index.js';
 // Register all game modes
 registerGameMode(FreeRollMode);
@@ -171,20 +172,72 @@ export async function getRolls(lobbyId, limit = 50) {
         rolledAt: new Date(row.rolled_at),
     }));
 }
+// Fixed pip prize awarded to each winner in a no-bet lobby. Kept small so
+// the Yandex Games path can't be used as an unbounded pip farm by abusing
+// trivially-winnable lobbies; tune in one place if needed.
+const NO_BET_WINNER_PIPS = 100;
 export async function endGame(lobbyId) {
     const state = activeGames.get(lobbyId);
     let payouts = null;
+    let winnerIds = [];
     // Resolve bets if betting is active
     if (state && BettingManager.isActive(lobbyId)) {
         const handler = getGameMode(state.gameMode);
         if (handler) {
             const winners = handler.getWinners(state);
+            winnerIds = winners;
             const result = await BettingManager.resolve(lobbyId, winners);
             if (result.success && result.payouts) {
                 payouts = result.payouts;
             }
         }
         BettingManager.cleanup(lobbyId);
+    }
+    else if (state && lobby.isNoBetLobby(lobbyId)) {
+        // No-bet lobby (Yandex Games): no in-round pot to resolve. Award a
+        // fixed pip prize to every winner reported by the mode handler.
+        const handler = getGameMode(state.gameMode);
+        if (handler) {
+            const winners = handler.getWinners(state);
+            winnerIds = winners;
+            if (winners.length > 0) {
+                payouts = new Map();
+                for (const winnerId of winners) {
+                    try {
+                        await query('UPDATE users SET pips = pips + $1 WHERE id = $2', [NO_BET_WINNER_PIPS, winnerId]);
+                        payouts.set(winnerId, NO_BET_WINNER_PIPS);
+                    }
+                    catch (err) {
+                        console.error('[no-bet] failed to award pips', { lobbyId, winnerId, err });
+                    }
+                }
+            }
+        }
+    }
+    else if (state) {
+        // Fallback for any future lobby flavour: still capture the winner
+        // list so matchmaking stats (xp / level / W-L) update correctly.
+        const handler = getGameMode(state.gameMode);
+        if (handler) {
+            winnerIds = handler.getWinners(state);
+        }
+    }
+    // Record matchmaking stats (xp / level / wins / losses / games_played)
+    // for every player that participated. `recordGameResult` is
+    // best-effort and never throws — failures are logged inside the
+    // service. Solo (<2 players) is filtered there as well.
+    if (state) {
+        const winnerSet = new Set(winnerIds);
+        const totalPlayers = state.playerOrder.length;
+        for (const playerId of state.playerOrder) {
+            recordGameResult({
+                userId: playerId,
+                won: winnerSet.has(playerId),
+                totalPlayers,
+            }).catch(err => {
+                console.error('Failed to record game result:', err);
+            });
+        }
     }
     // Increment games played for all players (for referral tracking)
     if (state) {
@@ -244,34 +297,21 @@ export function getPalmosRerollSelection(lobbyId, userId) {
 export function processPalmosTake(lobbyId, userId) {
     const state = activeGames.get(lobbyId);
     if (!state || state.gameMode !== 'poker_dice') {
-        console.log('[Palmos] processPalmosTake: invalid state or game mode');
         return null;
     }
     const palmosState = state.modeState;
-    console.log('[Palmos] processPalmosTake:', {
-        userId,
-        hasCurrentRound: !!palmosState.currentRound,
-        currentRoundPlayerId: palmosState.currentRound?.playerId,
-        currentDice: palmosState.currentRound?.currentDice
-    });
-    // Check if player has a current round
     if (!palmosState.currentRound || palmosState.currentRound.playerId !== userId) {
-        console.log('[Palmos] No current round or wrong player');
         return null;
     }
-    // Evaluate current hand and award points
     const hand = evaluateHandFromState(palmosState.currentRound.currentDice);
-    console.log('[Palmos] Hand evaluated:', hand);
     const currentScore = palmosState.scores.get(userId) || 0;
     const newScore = currentScore + hand.points;
     palmosState.scores.set(userId, newScore);
-    console.log('[Palmos] Score updated:', { currentScore, newScore });
     // Clear current round
     palmosState.currentRound = null;
     // Check if game is over
     const gameOver = newScore >= palmosState.targetScore;
     if (gameOver) {
-        const { PalmosDiceMode } = require('./gameModes/palmosDice.js');
         const winners = PalmosDiceMode.getWinners(state);
         return {
             outcome: 'game_over',

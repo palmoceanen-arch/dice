@@ -4,15 +4,85 @@
  */
 import { z } from 'zod';
 declare const MessageSchemas: {
-    readonly auth: z.ZodObject<{
+    readonly auth: z.ZodEffects<z.ZodObject<{
         type: z.ZodLiteral<"auth">;
-        initData: z.ZodString;
+        platform: z.ZodOptional<z.ZodEnum<["telegram", "yandex"]>>;
+        initData: z.ZodOptional<z.ZodString>;
+        signedData: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+        playerInfo: z.ZodOptional<z.ZodNullable<z.ZodObject<{
+            uuid: z.ZodOptional<z.ZodString>;
+            publicName: z.ZodOptional<z.ZodString>;
+            avatarUrlSmall: z.ZodOptional<z.ZodString>;
+            avatarUrlMedium: z.ZodOptional<z.ZodString>;
+            avatarUrlLarge: z.ZodOptional<z.ZodString>;
+            lang: z.ZodOptional<z.ZodString>;
+        }, "strip", z.ZodTypeAny, {
+            uuid?: string | undefined;
+            publicName?: string | undefined;
+            lang?: string | undefined;
+            avatarUrlSmall?: string | undefined;
+            avatarUrlMedium?: string | undefined;
+            avatarUrlLarge?: string | undefined;
+        }, {
+            uuid?: string | undefined;
+            publicName?: string | undefined;
+            lang?: string | undefined;
+            avatarUrlSmall?: string | undefined;
+            avatarUrlMedium?: string | undefined;
+            avatarUrlLarge?: string | undefined;
+        }>>>;
     }, "strip", z.ZodTypeAny, {
         type: "auth";
-        initData: string;
+        initData?: string | undefined;
+        platform?: "telegram" | "yandex" | undefined;
+        signedData?: string | null | undefined;
+        playerInfo?: {
+            uuid?: string | undefined;
+            publicName?: string | undefined;
+            lang?: string | undefined;
+            avatarUrlSmall?: string | undefined;
+            avatarUrlMedium?: string | undefined;
+            avatarUrlLarge?: string | undefined;
+        } | null | undefined;
     }, {
         type: "auth";
-        initData: string;
+        initData?: string | undefined;
+        platform?: "telegram" | "yandex" | undefined;
+        signedData?: string | null | undefined;
+        playerInfo?: {
+            uuid?: string | undefined;
+            publicName?: string | undefined;
+            lang?: string | undefined;
+            avatarUrlSmall?: string | undefined;
+            avatarUrlMedium?: string | undefined;
+            avatarUrlLarge?: string | undefined;
+        } | null | undefined;
+    }>, {
+        type: "auth";
+        initData?: string | undefined;
+        platform?: "telegram" | "yandex" | undefined;
+        signedData?: string | null | undefined;
+        playerInfo?: {
+            uuid?: string | undefined;
+            publicName?: string | undefined;
+            lang?: string | undefined;
+            avatarUrlSmall?: string | undefined;
+            avatarUrlMedium?: string | undefined;
+            avatarUrlLarge?: string | undefined;
+        } | null | undefined;
+    }, {
+        type: "auth";
+        initData?: string | undefined;
+        platform?: "telegram" | "yandex" | undefined;
+        signedData?: string | null | undefined;
+        playerInfo?: {
+            uuid?: string | undefined;
+            publicName?: string | undefined;
+            lang?: string | undefined;
+            avatarUrlSmall?: string | undefined;
+            avatarUrlMedium?: string | undefined;
+            avatarUrlLarge?: string | undefined;
+        } | null | undefined;
     }>;
     readonly set_nickname: z.ZodObject<{
         type: z.ZodLiteral<"set_nickname">;
@@ -130,16 +200,22 @@ declare const MessageSchemas: {
         gameMode: z.ZodEnum<["free_roll", "street_craps", "mexico", "greedy_pig", "poker_dice"]>;
         screenWidth: z.ZodOptional<z.ZodNumber>;
         screenHeight: z.ZodOptional<z.ZodNumber>;
+        bet: z.ZodOptional<z.ZodEffects<z.ZodNumber, number, number>>;
+        noBet: z.ZodOptional<z.ZodBoolean>;
     }, "strip", z.ZodTypeAny, {
         type: "create_lobby";
         gameMode: "free_roll" | "street_craps" | "mexico" | "greedy_pig" | "poker_dice";
         screenWidth?: number | undefined;
         screenHeight?: number | undefined;
+        bet?: number | undefined;
+        noBet?: boolean | undefined;
     }, {
         type: "create_lobby";
         gameMode: "free_roll" | "street_craps" | "mexico" | "greedy_pig" | "poker_dice";
         screenWidth?: number | undefined;
         screenHeight?: number | undefined;
+        bet?: number | undefined;
+        noBet?: boolean | undefined;
     }>;
     readonly join_lobby: z.ZodObject<{
         type: z.ZodLiteral<"join_lobby">;
@@ -689,6 +765,82 @@ declare const MessageSchemas: {
             bevelRadius: number;
         };
     }>;
+    readonly set_player_items: z.ZodObject<{
+        type: z.ZodLiteral<"set_player_items">;
+        dice: z.ZodOptional<z.ZodNullable<z.ZodObject<{
+            code: z.ZodString;
+            name: z.ZodString;
+            config: z.ZodNullable<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
+        }, "strip", z.ZodTypeAny, {
+            code: string;
+            config: Record<string, unknown> | null;
+            name: string;
+        }, {
+            code: string;
+            config: Record<string, unknown> | null;
+            name: string;
+        }>>>;
+        table: z.ZodOptional<z.ZodNullable<z.ZodObject<{
+            code: z.ZodString;
+            name: z.ZodString;
+            config: z.ZodNullable<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
+        }, "strip", z.ZodTypeAny, {
+            code: string;
+            config: Record<string, unknown> | null;
+            name: string;
+        }, {
+            code: string;
+            config: Record<string, unknown> | null;
+            name: string;
+        }>>>;
+        effect: z.ZodOptional<z.ZodNullable<z.ZodObject<{
+            code: z.ZodString;
+            name: z.ZodString;
+            config: z.ZodNullable<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
+        }, "strip", z.ZodTypeAny, {
+            code: string;
+            config: Record<string, unknown> | null;
+            name: string;
+        }, {
+            code: string;
+            config: Record<string, unknown> | null;
+            name: string;
+        }>>>;
+    }, "strip", z.ZodTypeAny, {
+        type: "set_player_items";
+        dice?: {
+            code: string;
+            config: Record<string, unknown> | null;
+            name: string;
+        } | null | undefined;
+        table?: {
+            code: string;
+            config: Record<string, unknown> | null;
+            name: string;
+        } | null | undefined;
+        effect?: {
+            code: string;
+            config: Record<string, unknown> | null;
+            name: string;
+        } | null | undefined;
+    }, {
+        type: "set_player_items";
+        dice?: {
+            code: string;
+            config: Record<string, unknown> | null;
+            name: string;
+        } | null | undefined;
+        table?: {
+            code: string;
+            config: Record<string, unknown> | null;
+            name: string;
+        } | null | undefined;
+        effect?: {
+            code: string;
+            config: Record<string, unknown> | null;
+            name: string;
+        } | null | undefined;
+    }>;
     readonly place_bet: z.ZodObject<{
         type: z.ZodLiteral<"place_bet">;
         amount: z.ZodNumber;
@@ -712,6 +864,53 @@ declare const MessageSchemas: {
         type: "cancel_bet";
     }, {
         type: "cancel_bet";
+    }>;
+    readonly mm_join_queue: z.ZodObject<{
+        type: z.ZodLiteral<"mm_join_queue">;
+        mode: z.ZodEnum<["duel", "any"]>;
+        betAmount: z.ZodEffects<z.ZodNumber, number, number>;
+        gameMode: z.ZodOptional<z.ZodEnum<["free_roll", "street_craps", "mexico", "greedy_pig", "poker_dice"]>>;
+    }, "strip", z.ZodTypeAny, {
+        type: "mm_join_queue";
+        betAmount: number;
+        mode: "duel" | "any";
+        gameMode?: "free_roll" | "street_craps" | "mexico" | "greedy_pig" | "poker_dice" | undefined;
+    }, {
+        type: "mm_join_queue";
+        betAmount: number;
+        mode: "duel" | "any";
+        gameMode?: "free_roll" | "street_craps" | "mexico" | "greedy_pig" | "poker_dice" | undefined;
+    }>;
+    readonly mm_leave_queue: z.ZodObject<{
+        type: z.ZodLiteral<"mm_leave_queue">;
+    }, "strip", z.ZodTypeAny, {
+        type: "mm_leave_queue";
+    }, {
+        type: "mm_leave_queue";
+    }>;
+    readonly mm_ready: z.ZodObject<{
+        type: z.ZodLiteral<"mm_ready">;
+    }, "strip", z.ZodTypeAny, {
+        type: "mm_ready";
+    }, {
+        type: "mm_ready";
+    }>;
+    readonly sync_yandex_pips: z.ZodObject<{
+        type: z.ZodLiteral<"sync_yandex_pips">;
+        pips: z.ZodNumber;
+    }, "strip", z.ZodTypeAny, {
+        type: "sync_yandex_pips";
+        pips: number;
+    }, {
+        type: "sync_yandex_pips";
+        pips: number;
+    }>;
+    readonly get_player_stats: z.ZodObject<{
+        type: z.ZodLiteral<"get_player_stats">;
+    }, "strip", z.ZodTypeAny, {
+        type: "get_player_stats";
+    }, {
+        type: "get_player_stats";
     }>;
     readonly _client_ping: z.ZodObject<{
         type: z.ZodLiteral<"_client_ping">;

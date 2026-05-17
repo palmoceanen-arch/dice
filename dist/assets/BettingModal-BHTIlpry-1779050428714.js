@@ -1,4 +1,4 @@
-var h=Object.defineProperty;var p=(r,t,e)=>t in r?h(r,t,{enumerable:!0,configurable:!0,writable:!0,value:e}):r[t]=e;var n=(r,t,e)=>p(r,typeof t!="symbol"?t+"":t,e);import{t as a,w as u}from"./index-AKCTbsdO-1770310226000.js";class o{static init(){console.log("[BettingModal] Initialized")}static show(t=10,e=0){this.overlay||(this.minBet=t,this.userBalance=e,this.currentBet=t,this.confirmed=!1,this.overlay=document.createElement("div"),this.overlay.className="betting-modal-overlay",this.overlay.innerHTML=`
+var h=Object.defineProperty;var p=(r,t,e)=>t in r?h(r,t,{enumerable:!0,configurable:!0,writable:!0,value:e}):r[t]=e;var n=(r,t,e)=>p(r,typeof t!="symbol"?t+"":t,e);import{t as a,w as u}from"./index-DCj87NNl-1779050428714.js";class o{static init(){console.log("[BettingModal] Initialized")}static show(t=10,e=0){this.overlay||(this.minBet=t,this.userBalance=e,this.currentBet=t,this.confirmed=!1,this.overlay=document.createElement("div"),this.overlay.className="betting-modal-overlay",this.overlay.innerHTML=`
       <div class="betting-modal">
         <div class="betting-header">
           <span class="balance">💰 ${e.toLocaleString()} pips</span>

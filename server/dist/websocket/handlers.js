@@ -1,11 +1,13 @@
-import { validateInitData, parseInitDataUnsafe, extractStartParam } from '../services/auth.js';
-import { findOrCreateUser, getUserInventory, getShopItems, setNickname, equipItem, getUserByUsername, getUserById, updatePips, getUserPips } from '../services/users.js';
+import { validateInitData, parseInitDataUnsafe, extractStartParam, validateYandexSignature, parseYandexPlayerUnsafe } from '../services/auth.js';
+import { findOrCreateUser, findOrCreateYandexUser, getUserInventory, getShopItems, setNickname, equipItem, getUserByUsername, getUserById, updatePips, getUserPips } from '../services/users.js';
 import { getFriends, removeFriend, sendFriendRequest, getPendingFriendRequests, acceptFriendRequest, declineFriendRequest } from '../services/friends.js';
 import { getReferralStats, getReferralList } from '../services/referrals.js';
 import { activateBoost, getActiveBoosts, getBoostState } from '../services/boosts.js';
 import { BettingManager } from '../services/betting.js';
 import * as lobby from '../services/lobby.js';
 import * as game from '../services/game.js';
+import * as matchmaking from '../services/matchmaking.js';
+import { getPlayerStats } from '../services/stats.js';
 import * as connections from './connections.js';
 import { setUserIdForWs } from './server.js';
 import { config } from '../config.js';
@@ -14,11 +16,21 @@ import { sendGameInvite, createStarsInvoice } from '../services/telegram.js';
 import { logger } from '../utils/logger.js';
 import { metricsCollector } from '../utils/metrics.js';
 import { validateRoll } from '../utils/anti-fraud.js';
+// Storage for last frame of each player's throw (for reconnect)
+// Key: lobbyId, Value: Map of playerId -> last frame data
+const lastFrameStorage = new Map();
+const activeThrows = new Map();
+// Throws older than this are assumed to have ended without a `throw_end`
+// (player crashed, network died, etc.) and won't be replayed on reconnect.
+const ACTIVE_THROW_MAX_AGE_MS = 30_000;
 // Message is already validated by server.ts, so we receive typed data
 export async function handleMessage(ws, message, userId) {
     // Auth message - no userId required
     if (message.type === 'auth') {
         metricsCollector.authAttempt();
+        if (message.platform === 'yandex') {
+            return handleYandexAuth(ws, message.signedData ?? null, message.playerInfo ?? null);
+        }
         return handleAuth(ws, message.initData);
     }
     // Admin gift - special handler for gift script (no auth required, sends to target user)
@@ -77,9 +89,20 @@ export async function handleMessage(ws, message, userId) {
                 await handleGetReferralList(userId);
                 break;
             // Lobby
-            case 'create_lobby':
-                await handleCreateLobby(userId, message.gameMode, message.screenWidth, message.screenHeight);
+            case 'create_lobby': {
+                // New protocol: `bet` is the per-player stake in pips. `0`
+                // (or omitted with `noBet: true`) means a no-bet lobby.
+                //
+                // Legacy protocol (Telegram callsites): `noBet: true`. When
+                // both are absent we default to a regular betting lobby.
+                const bet = typeof message.bet === 'number'
+                    ? message.bet
+                    : message.noBet === true
+                        ? 0
+                        : undefined;
+                await handleCreateLobby(userId, message.gameMode, message.screenWidth, message.screenHeight, bet);
                 break;
+            }
             case 'join_lobby':
                 await handleJoinLobby(userId, message.lobbyId, message.screenWidth, message.screenHeight);
                 break;
@@ -158,6 +181,16 @@ export async function handleMessage(ws, message, userId) {
             case 'save_custom_dice':
                 await handleSaveCustomDice(userId, message.config);
                 break;
+            // Yandex Games: push the player's locally-equipped dice / table /
+            // effect configs to the server so the server can broadcast them to
+            // opponents in multiplayer.
+            case 'set_player_items':
+                handleSetPlayerItems(userId, {
+                    dice: message.dice,
+                    table: message.table,
+                    effect: message.effect,
+                });
+                break;
             // Reactions
             case 'send_reaction':
                 await handleSendReaction(userId, message.content);
@@ -171,6 +204,27 @@ export async function handleMessage(ws, message, userId) {
                 break;
             case 'cancel_bet':
                 await handleCancelBet(userId);
+                break;
+            // Matchmaking (Yandex quick-play)
+            case 'mm_join_queue':
+                await matchmaking.joinQueue({
+                    userId,
+                    mode: message.mode,
+                    betAmount: message.betAmount,
+                    gameMode: message.gameMode,
+                });
+                break;
+            case 'mm_leave_queue':
+                matchmaking.leaveQueue(userId);
+                break;
+            case 'mm_ready':
+                matchmaking.markReady(userId);
+                break;
+            case 'sync_yandex_pips':
+                await handleSyncYandexPips(userId, message.pips);
+                break;
+            case 'get_player_stats':
+                await handleGetPlayerStats(userId);
                 break;
             default:
                 connections.send(userId, { type: 'error', message: `Unknown message type: ${message.type}` });
@@ -199,6 +253,56 @@ async function handleAdminGift(targetUserId, item) {
     }
 }
 // === Auth ===
+async function handleYandexAuth(ws, signedData, playerInfo) {
+    // Verified payload (uuid) takes precedence over playerInfo.uuid. In prod we
+    // require a valid HMAC; in dev we fall back to the unsafe parser so local
+    // npm run dev works without YANDEX_APP_SECRET set.
+    const verified = signedData ? validateYandexSignature(signedData) : null;
+    let yandexPlayer = null;
+    if (verified) {
+        yandexPlayer = {
+            uuid: verified.uuid,
+            publicName: playerInfo?.publicName,
+            avatarUrlSmall: playerInfo?.avatarUrlSmall,
+            avatarUrlMedium: playerInfo?.avatarUrlMedium,
+            avatarUrlLarge: playerInfo?.avatarUrlLarge,
+            lang: playerInfo?.lang,
+        };
+    }
+    else if (config.isDev) {
+        yandexPlayer = parseYandexPlayerUnsafe(signedData, playerInfo ?? null);
+    }
+    if (!yandexPlayer) {
+        metricsCollector.authFailure();
+        logger.warn('Yandex auth failed', { hasSignedData: !!signedData });
+        ws.send(JSON.stringify({ type: 'auth_error', message: 'Invalid Yandex signature' }));
+        return null;
+    }
+    const user = await findOrCreateYandexUser(yandexPlayer);
+    const inventory = await getUserInventory(user.id);
+    const activeBoosts = await getActiveBoosts(user.id);
+    setUserIdForWs(ws, user.id);
+    connections.addConnection(user, ws);
+    const reconnectInfo = lobby.canReconnect(user.id);
+    ws.send(JSON.stringify({
+        type: 'auth_success',
+        user,
+        inventory,
+        activeBoosts,
+        canReconnect: reconnectInfo ? {
+            lobbyId: reconnectInfo.lobbyId,
+            timeLeft: reconnectInfo.timeLeft,
+        } : null,
+    }));
+    metricsCollector.authSuccess();
+    logger.info('Yandex user authenticated', {
+        userId: user.id,
+        yandexId: user.yandexId,
+        nickname: user.nickname,
+        canReconnect: !!reconnectInfo,
+    });
+    return user.id;
+}
 async function handleAuth(ws, initData) {
     const telegramUser = config.isDev
         ? parseInitDataUnsafe(initData)
@@ -263,6 +367,144 @@ async function handleSetNickname(userId, nickname) {
     }
     else {
         connections.send(userId, { type: 'error', message: 'Nickname is invalid or already taken' });
+    }
+}
+// Stash the client-supplied dice/table/effect overrides on the
+// connection. See `connections.ClientItemOverride` for the rationale.
+// Called synchronously by the message dispatcher — no DB writes, no
+// broadcasts; the next `game_started` / `throw_start` will pick the
+// overrides up.
+function handleSetPlayerItems(userId, items) {
+    connections.setClientItemOverride(userId, 'dice', items.dice);
+    connections.setClientItemOverride(userId, 'table', items.table);
+    connections.setClientItemOverride(userId, 'effect', items.effect);
+    // Log what the client pushed so we can diagnose the Yandex "opponents see
+    // white dice" bug from journalctl. Only logs slots that were actually
+    // sent (undefined slots are no-ops).
+    const summary = {};
+    if (items.dice !== undefined)
+        summary.dice = items.dice ? items.dice.code : 'null';
+    if (items.table !== undefined)
+        summary.table = items.table ? items.table.code : 'null';
+    if (items.effect !== undefined)
+        summary.effect = items.effect ? items.effect.code : 'null';
+    if (Object.keys(summary).length > 0) {
+        logger.info('set_player_items received', { userId, ...summary });
+    }
+}
+// Synthetic, per-user item IDs for client-supplied dice/table/effect
+// configs (Yandex Cloud Save). Chosen well above the real `item_catalog`
+// id range so they cannot collide with any DB row. The shape matches
+// what client code uses to key configs in `availableItems`.
+const SYNTHETIC_ITEM_ID_OFFSET = 1_000_000_000;
+function syntheticItemId(userId, slot) {
+    const slotOffset = slot === 'dice' ? 1 : slot === 'table' ? 2 : 3;
+    return SYNTHETIC_ITEM_ID_OFFSET + userId * 10 + slotOffset;
+}
+export async function buildAvailableItemsAndOverrides(players) {
+    const availableItems = [];
+    const seenItemIds = new Set();
+    const equipOverrides = [];
+    // Per-player diagnostic breakdown: which slot resolved via client
+    // override vs DB row. Logged once at the end so a single journalctl
+    // line tells you exactly what each opponent will render with.
+    const perPlayerSummary = [];
+    for (const player of players) {
+        const userId = player.user.id;
+        if (!userId)
+            continue;
+        const override = { userId };
+        const summary = { userId };
+        const slots = ['dice', 'table', 'effect'];
+        for (const slot of slots) {
+            const clientItem = connections.getClientItemOverride(userId, slot);
+            const dbItemId = slot === 'dice'
+                ? player.user.equippedDiceId
+                : slot === 'table'
+                    ? player.user.equippedTableId
+                    : player.user.equippedEffectId;
+            if (clientItem) {
+                // Client supplied an override — synthesize an id and inject the
+                // config directly into availableItems.
+                const id = syntheticItemId(userId, slot);
+                if (!seenItemIds.has(id)) {
+                    seenItemIds.add(id);
+                    availableItems.push({
+                        id,
+                        type: slot,
+                        code: clientItem.code,
+                        name: clientItem.name,
+                        config: clientItem.config,
+                    });
+                }
+                if (slot === 'dice')
+                    override.equippedDiceId = id;
+                else if (slot === 'table')
+                    override.equippedTableId = id;
+                else
+                    override.equippedEffectId = id;
+                summary[slot] = `client:${clientItem.code}`;
+            }
+            else if (dbItemId && !seenItemIds.has(dbItemId)) {
+                seenItemIds.add(dbItemId);
+                const result = await query('SELECT id, type, code, name, config FROM item_catalog WHERE id = $1', [dbItemId]);
+                if (result.rows[0]) {
+                    const row = result.rows[0];
+                    availableItems.push({
+                        id: row.id,
+                        type: row.type,
+                        code: row.code,
+                        name: row.name,
+                        config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
+                    });
+                    summary[slot] = `db:${row.code}`;
+                }
+                else {
+                    summary[slot] = `db:missing(${dbItemId})`;
+                }
+            }
+            else if (dbItemId) {
+                // Already in availableItems from a previous player — still record
+                // that this player resolved via DB so the log line is complete.
+                summary[slot] = `db:${dbItemId}`;
+            }
+            else {
+                summary[slot] = 'none';
+            }
+        }
+        if (override.equippedDiceId !== undefined ||
+            override.equippedTableId !== undefined ||
+            override.equippedEffectId !== undefined) {
+            equipOverrides.push(override);
+        }
+        perPlayerSummary.push(summary);
+    }
+    logger.info('buildAvailableItemsAndOverrides', {
+        players: perPlayerSummary,
+        availableItemsCount: availableItems.length,
+        overridesCount: equipOverrides.length,
+    });
+    return { availableItems, equipOverrides };
+}
+// Apply client-side equip overrides to a lobby payload so opponents see
+// the synthetic IDs and can match them up with `availableItems`.
+export function applyEquipOverridesToLobby(lobbyPayload, overrides) {
+    if (!lobbyPayload?.players || overrides.length === 0)
+        return;
+    const byUser = new Map(overrides.map((o) => [o.userId, o]));
+    for (const player of lobbyPayload.players) {
+        const userId = player.user.id;
+        if (!userId)
+            continue;
+        const o = byUser.get(userId);
+        if (!o)
+            continue;
+        if (o.equippedDiceId !== undefined)
+            player.user.equippedDiceId = o.equippedDiceId;
+        if (o.equippedTableId !== undefined)
+            player.user.equippedTableId = o.equippedTableId;
+        if (o.equippedEffectId !== undefined)
+            player.user.equippedEffectId = o.equippedEffectId;
     }
 }
 async function handleEquipItem(userId, itemId, slot) {
@@ -501,14 +743,22 @@ async function handleGetReferralList(userId) {
     });
 }
 // === Lobby ===
-async function handleCreateLobby(userId, gameMode, screenWidth, screenHeight) {
+async function handleCreateLobby(userId, gameMode, screenWidth, screenHeight, bet) {
     // Check if already in a lobby
     const conn = connections.getConnection(userId);
     if (conn?.lobbyId) {
         connections.send(userId, { type: 'error', message: 'Already in a lobby' });
         return;
     }
-    const newLobby = await lobby.createLobby(userId, gameMode);
+    if (matchmaking.isQueued(userId)) {
+        matchmaking.leaveQueue(userId);
+    }
+    // `bet === 0` (and the legacy `noBet: true` path) opt into the no-bet
+    // lobby flavour; any positive value or `undefined` keeps the regular
+    // betting flow.
+    const noBet = bet === 0;
+    const betAmount = noBet ? 0 : bet ?? 10;
+    const newLobby = await lobby.createLobby(userId, gameMode, noBet, betAmount);
     metricsCollector.lobbyCreated();
     // Store screen size
     if (screenWidth && screenHeight) {
@@ -525,6 +775,9 @@ async function handleCreateLobby(userId, gameMode, screenWidth, screenHeight) {
     notifyFriendsStatusChanged(userId, 'in_lobby');
 }
 async function handleJoinLobby(userId, lobbyId, screenWidth, screenHeight) {
+    if (matchmaking.isQueued(userId)) {
+        matchmaking.leaveQueue(userId);
+    }
     const success = await lobby.joinLobby(lobbyId, userId);
     if (success) {
         // Store screen size
@@ -533,10 +786,12 @@ async function handleJoinLobby(userId, lobbyId, screenWidth, screenHeight) {
         }
         const lobbyData = await lobby.getLobby(lobbyId);
         connections.send(userId, { type: 'lobby_joined', lobby: lobbyData });
-        // Initialize betting if 2+ players
-        if (lobbyData && lobbyData.players.length >= 2) {
+        // Initialize betting if 2+ players (skip entirely for no-bet lobbies).
+        if (lobbyData &&
+            !lobby.isNoBetLobby(lobbyId) &&
+            lobbyData.players.length >= 2) {
             if (!BettingManager.isActive(lobbyId)) {
-                BettingManager.initialize(lobbyId, 10);
+                BettingManager.initialize(lobbyId, lobby.getLobbyBetAmount(lobbyId));
                 logger.info('[BETTING] Initialized for lobby', { lobbyId, playerCount: lobbyData.players.length });
             }
         }
@@ -585,16 +840,14 @@ async function handleLeaveLobby(userId) {
     const lobbyId = conn.lobbyId;
     // Get pending invitation users before leaving (to notify them if lobby closes)
     const pendingInviteUsers = await lobby.getPendingInvitationUsers(lobbyId);
-    await lobby.leaveLobby(lobbyId, userId);
+    const leaveResult = await lobby.leaveLobby(lobbyId, userId);
     // Get updated pips balance
     const newPips = await getUserPips(userId);
     connections.send(userId, {
         type: 'lobby_left',
         newPips
     });
-    // Check if lobby was closed (no players left)
-    const lobbyData = await lobby.getLobby(lobbyId);
-    if (!lobbyData || lobbyData.status === 'finished') {
+    if (leaveResult.closed) {
         // Notify all users with pending invitations that the lobby was closed
         for (const invitedUserId of pendingInviteUsers) {
             connections.send(invitedUserId, {
@@ -602,12 +855,30 @@ async function handleLeaveLobby(userId) {
                 lobbyId,
             });
         }
+        // Any active throw belonging to this lobby is now meaningless.
+        activeThrows.delete(lobbyId);
     }
-    // Notify other players
-    broadcastToLobby(lobbyId, {
-        type: 'player_left',
-        oderId: userId,
-    }, userId);
+    if (leaveResult.closedReason === 'insufficient_players') {
+        // The game was in progress and this player's leave dropped the lobby
+        // below the playable threshold. Tell the remaining player(s) the game
+        // is over so their UI exits the in-game state instead of waiting on a
+        // turn that will never come.
+        for (const remainingUserId of leaveResult.remainingPlayers) {
+            connections.send(remainingUserId, {
+                type: 'game_ended_by_disconnect',
+                oderId: userId,
+                reason: 'opponent_left',
+            });
+        }
+    }
+    else {
+        // Lobby still alive (or never had >1 player to begin with) — tell
+        // the rest of the lobby that this player is gone so their UI updates.
+        broadcastToLobby(lobbyId, {
+            type: 'player_left',
+            oderId: userId,
+        }, userId);
+    }
     // Notify friends that user is back online (not in lobby anymore)
     notifyFriendsStatusChanged(userId, 'online');
 }
@@ -685,6 +956,24 @@ async function handleReconnectGame(userId, lobbyId) {
     // Send game state to reconnected player
     // Extract mode-specific state
     const modeState = gameState.modeState || {};
+    // Convert Map to object for scores (Palmo's Dice uses Map)
+    let scores = modeState.scores;
+    if (scores instanceof Map) {
+        scores = Object.fromEntries(scores);
+    }
+    // Get dice count from game state
+    const diceCount = game.getDiceCount(lobbyId);
+    // For Palmo's Dice, include current round state (dice on table)
+    const currentRound = modeState.currentRound || null;
+    // Get last frame for this player (if they were in middle of a throw)
+    const lobbyFrames = lastFrameStorage.get(lobbyId);
+    const lastFrame = lobbyFrames?.get(userId) || null;
+    console.log(`[Reconnect] User ${userId} - Palmo's Dice state:`, {
+        hasCurrentRound: !!currentRound,
+        currentRoundPlayerId: currentRound?.playerId,
+        hasLastFrame: !!lastFrame,
+        lastFrameDiceCount: lastFrame?.dice?.length
+    });
     connections.send(userId, {
         type: 'game_reconnected',
         lobby: { ...lobbyData, availableItems },
@@ -693,20 +982,69 @@ async function handleReconnectGame(userId, lobbyId) {
         phase: modeState.phase,
         pointValue: modeState.pointValue,
         penalties: modeState.penalties,
-        scores: modeState.scores,
+        scores,
         turnScore: modeState.turnScore,
+        currentRound, // Include current round for Palmo's Dice
+        lastFrame, // Include last frame for dice position restore
         tableConfig,
         throwSeed: gameState.throwSeed,
         minAspectRatio: lobby.getMinAspectRatio(lobbyId),
+        diceCount,
     });
-    // Notify other players that this player reconnected
+    // Notify other players that this player reconnected. We piggy-back the
+    // reconnecting player's equipped items on this broadcast so peers who
+    // were already connected (i.e. they joined the lobby BEFORE this player
+    // came back online) can fill in the missing dice / table / effect
+    // configs in their local cache. Without this, the scenario
+    //   1. Both players disconnect mid-game.
+    //   2. Player A reconnects first \u2014 lobbyData.players at that point
+    //      does not include Player B, so A's `game_reconnected` payload
+    //      has no entry for B in `availableItems` and `playerDiceConfigs`
+    //      is empty for B.
+    //   3. Player B reconnects \u2014 A only learns about this through
+    //      `player_reconnected`, which historically carried no item data.
+    //      A then renders B's dice with the default skin (wrong colour).
+    // leaves A's view permanently stale until the next game.
     const player = lobbyData.players.find(p => p.oderId === userId);
     const playerNickname = player?.user?.nickname || 'Player';
+    // Pull the just-reconnected player's items out of the already-built
+    // `availableItems` list (it's built from ALL currently-joined players
+    // so it already includes this player's gear).
+    const reconnectedPlayerItems = player
+        ? availableItems.filter((item) => item.id === player.user.equippedDiceId ||
+            item.id === player.user.equippedTableId ||
+            item.id === player.user.equippedEffectId)
+        : [];
     broadcastToLobby(lobbyId, {
         type: 'player_reconnected',
         oderId: userId,
         nickname: playerNickname,
+        equippedDiceId: player?.user?.equippedDiceId ?? null,
+        equippedTableId: player?.user?.equippedTableId ?? null,
+        equippedEffectId: player?.user?.equippedEffectId ?? null,
+        availableItems: reconnectedPlayerItems,
     }, userId);
+    // If another player was mid-throw when this player reconnected, replay
+    // a synthesized `throw_start` to them so their client picks up the
+    // opponent's dice skin and joins the in-flight streaming replay. We
+    // skip it when the reconnecting player IS the thrower (they own the
+    // throw locally) or when the throw is older than ACTIVE_THROW_MAX_AGE_MS
+    // (the original thrower probably crashed and never sent throw_end).
+    const active = activeThrows.get(lobbyId);
+    if (active &&
+        active.playerId !== userId &&
+        Date.now() - active.startedAt < ACTIVE_THROW_MAX_AGE_MS) {
+        connections.send(userId, {
+            type: 'throw_start',
+            playerId: active.playerId,
+            playerNickname: active.playerNickname,
+            throwPower: active.throwPower,
+            effectId: active.effectId,
+            equippedDiceId: active.equippedDiceId,
+            diceConfig: active.diceConfig,
+            selectedDice: active.selectedDice,
+        });
+    }
     console.log(`[Game] Player ${userId} reconnected to game ${lobbyId}`);
 }
 async function handleVoteTable(userId, tableId) {
@@ -750,9 +1088,12 @@ async function handleStartGame(userId) {
         connections.send(userId, { type: 'error', message: 'Only host can start the game' });
         return;
     }
-    // Check if betting is required (2+ players)
+    // Check if betting is required (2+ players). No-bet lobbies (e.g. the
+    // Yandex Games build) always skip the betting UI and go straight into
+    // gameplay regardless of player count.
     const playerIds = lobby.getLobbyPlayers(conn.lobbyId);
-    if (playerIds.length >= 2) {
+    const skipBetting = lobby.isNoBetLobby(conn.lobbyId);
+    if (!skipBetting && playerIds.length >= 2) {
         // Check if betting is already active
         if (BettingManager.isActive(conn.lobbyId)) {
             const state = BettingManager.getState(conn.lobbyId);
@@ -791,68 +1132,32 @@ async function handleStartGame(userId) {
                 }
             }
         }
-        // Collect all equipped items from all players for client-side preloading
-        const availableItems = [];
-        const seenItemIds = new Set();
-        if (updatedLobby) {
-            for (const player of updatedLobby.players) {
-                // Add dice
-                if (player.user.equippedDiceId && !seenItemIds.has(player.user.equippedDiceId)) {
-                    seenItemIds.add(player.user.equippedDiceId);
-                    const diceResult = await query('SELECT id, type, code, name, config FROM item_catalog WHERE id = $1', [player.user.equippedDiceId]);
-                    if (diceResult.rows[0]) {
-                        const row = diceResult.rows[0];
-                        availableItems.push({
-                            id: row.id,
-                            type: row.type,
-                            code: row.code,
-                            name: row.name,
-                            config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-                        });
-                    }
-                }
-                // Add table
-                if (player.user.equippedTableId && !seenItemIds.has(player.user.equippedTableId)) {
-                    seenItemIds.add(player.user.equippedTableId);
-                    const tableResult = await query('SELECT id, type, code, name, config FROM item_catalog WHERE id = $1', [player.user.equippedTableId]);
-                    if (tableResult.rows[0]) {
-                        const row = tableResult.rows[0];
-                        availableItems.push({
-                            id: row.id,
-                            type: row.type,
-                            code: row.code,
-                            name: row.name,
-                            config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-                        });
-                    }
-                }
-                // Add effect
-                if (player.user.equippedEffectId && !seenItemIds.has(player.user.equippedEffectId)) {
-                    seenItemIds.add(player.user.equippedEffectId);
-                    const effectResult = await query('SELECT id, type, code, name, config FROM item_catalog WHERE id = $1', [player.user.equippedEffectId]);
-                    if (effectResult.rows[0]) {
-                        const row = effectResult.rows[0];
-                        availableItems.push({
-                            id: row.id,
-                            type: row.type,
-                            code: row.code,
-                            name: row.name,
-                            config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-                        });
-                    }
-                }
-            }
-        }
+        // Collect all equipped items (DB-backed and client-supplied) so the
+        // client can preload every other player's dice / table / effect
+        // config for replays. Patches lobby.players[*].user.equipped*Id to
+        // the synthetic IDs when a client-supplied override is in play, so
+        // the client can map players → configs via `availableItems` like
+        // before.
+        const { availableItems, equipOverrides } = await buildAvailableItemsAndOverrides(updatedLobby?.players ?? []);
+        applyEquipOverridesToLobby(updatedLobby, equipOverrides);
         // Get selected table config (fallback to host's equipped table if not selected)
         let tableConfig = await lobby.getSelectedTableConfig(conn.lobbyId);
         if (!tableConfig) {
-            // Fallback: get host's equipped table config from connection cache
-            const host = conn.user;
-            if (host.equippedTableId) {
-                const tableResult = await query('SELECT config FROM item_catalog WHERE id = $1', [host.equippedTableId]);
-                if (tableResult.rows[0]?.config) {
-                    const cfg = tableResult.rows[0].config;
-                    tableConfig = typeof cfg === 'string' ? JSON.parse(cfg) : cfg;
+            // Prefer a client-supplied table override (Yandex Cloud Save) over
+            // the DB-equipped table.
+            const hostTableOverride = connections.getClientItemOverride(userId, 'table');
+            if (hostTableOverride && hostTableOverride.config) {
+                tableConfig = hostTableOverride.config;
+            }
+            else {
+                // Fallback: get host's equipped table config from connection cache
+                const host = conn.user;
+                if (host.equippedTableId) {
+                    const tableResult = await query('SELECT config FROM item_catalog WHERE id = $1', [host.equippedTableId]);
+                    if (tableResult.rows[0]?.config) {
+                        const cfg = tableResult.rows[0].config;
+                        tableConfig = typeof cfg === 'string' ? JSON.parse(cfg) : cfg;
+                    }
                 }
             }
         }
@@ -896,37 +1201,164 @@ async function handleStartGame(userId) {
         connections.send(userId, { type: 'error', message: 'Cannot start game yet' });
     }
 }
+// Rematch ("New Game") flow.
+//
+// Every player in the post-game lobby now has a "New Game" button (not
+// just the host); each press sends `restart_game`. The server tracks
+// which players have agreed in `lobby.restartVotes` and broadcasts a
+// running tally so each client can show progress ("1/2 ready"). When
+// every currently-joined player has agreed we auto-place the saved bet
+// for each of them (or skip betting entirely for no-bet lobbies) and
+// start the next round, with no manual betting UI in between. If any
+// player can't afford the bet, the vote is reset and an error is sent
+// to everyone so the modal can re-enable the button.
 async function handleRestartGame(userId) {
     const conn = connections.getConnection(userId);
     if (!conn?.lobbyId) {
         connections.send(userId, { type: 'error', message: 'Not in a lobby' });
         return;
     }
-    const lobbyData = await lobby.getLobby(conn.lobbyId);
-    if (!lobbyData || lobbyData.hostId !== userId) {
-        connections.send(userId, { type: 'error', message: 'Only host can restart the game' });
+    const lobbyId = conn.lobbyId;
+    const lobbyData = await lobby.getLobby(lobbyId);
+    if (!lobbyData) {
+        connections.send(userId, { type: 'error', message: 'Lobby not found' });
         return;
     }
-    // Check if betting is required (2+ players)
-    const playerIds = lobby.getLobbyPlayers(conn.lobbyId);
-    if (playerIds.length >= 2) {
-        // Initialize betting for new game
-        BettingManager.initialize(conn.lobbyId, 10);
-        logger.info('[BETTING] Initialized for restart', { lobbyId: conn.lobbyId, playerCount: playerIds.length });
-        // Show betting UI to all players with their balances
-        for (const playerId of playerIds) {
-            const balance = await getUserPips(playerId);
-            connections.send(playerId, {
-                type: 'show_betting_ui',
-                minBet: 10,
-                balance
-            });
-        }
-        logger.info('[BETTING] Showing betting UI for restart', { lobbyId: conn.lobbyId });
-        return; // Wait for bets to be placed
+    const playerIds = lobby.getLobbyPlayers(lobbyId);
+    // Refuse to restart a multiplayer match with a single player. Without
+    // this guard, a player whose opponents pressed "Exit" on the post-game
+    // result modal can keep pressing "New Game" and play with themselves.
+    // The Yandex `MultiplayerLobbyGuard` already auto-leaves the lobby on
+    // the first opponent drop client-side, but raw `restart_game` messages
+    // (devtools, modded client) can bypass that — this is the server-side
+    // safety net. `handleStartGame` intentionally still allows 1-player
+    // starts for solo Free Roll lobbies that have not had a multiplayer
+    // match yet.
+    if (playerIds.length < 2) {
+        connections.send(userId, {
+            type: 'error',
+            message: 'Need at least 2 players to start a new round',
+        });
+        return;
     }
-    // Single player - start game immediately
-    await startGameAfterBetting(conn.lobbyId);
+    // Reject votes from players who aren't actually in this lobby anymore
+    // (e.g. they leftLobby() mid-vote and somehow still managed to fire a
+    // delayed restart_game).
+    if (!playerIds.includes(userId)) {
+        connections.send(userId, { type: 'error', message: 'You are not in this lobby' });
+        return;
+    }
+    lobby.addRestartVote(lobbyId, userId);
+    const votes = lobby.getRestartVotes(lobbyId).filter((id) => playerIds.includes(id));
+    // Tell everyone how the rematch vote stands so each client can update
+    // its post-game modal (button -> "Waiting for opponent…", show count).
+    broadcastToLobby(lobbyId, {
+        type: 'restart_vote_update',
+        votedPlayerIds: votes,
+        totalPlayers: playerIds.length,
+    });
+    logger.info('[REMATCH] restart_game vote', {
+        lobbyId,
+        voter: userId,
+        votes: votes.length,
+        total: playerIds.length,
+    });
+    // Still missing votes? Wait for the other player(s) to press New Game.
+    if (votes.length < playerIds.length) {
+        return;
+    }
+    // All current players agreed — time to deal with bets and (re)start.
+    const skipBetting = lobby.isNoBetLobby(lobbyId);
+    const betAmount = lobby.getLobbyBetAmount(lobbyId);
+    if (skipBetting || betAmount <= 0) {
+        logger.info('[REMATCH] starting without betting', {
+            lobbyId,
+            playerCount: playerIds.length,
+        });
+        lobby.clearRestartVotes(lobbyId);
+        await startGameAfterBetting(lobbyId);
+        return;
+    }
+    // Pre-flight pip check so we don't half-place bets and then bail out.
+    const balances = await Promise.all(playerIds.map(async (id) => ({ id, pips: await getUserPips(id) })));
+    const broke = balances.filter((b) => b.pips < betAmount);
+    if (broke.length > 0) {
+        lobby.clearRestartVotes(lobbyId);
+        const brokeIds = broke.map((b) => b.id);
+        logger.info('[REMATCH] insufficient pips for rematch', {
+            lobbyId,
+            betAmount,
+            brokeIds,
+        });
+        broadcastToLobby(lobbyId, {
+            type: 'restart_failed',
+            reason: 'insufficient_pips',
+            brokePlayerIds: brokeIds,
+            betAmount,
+            message: 'Not enough pips for the current bet',
+        });
+        return;
+    }
+    // Auto-place + auto-confirm each player's bet at the saved bet amount.
+    // We skip the show_betting_ui round-trip entirely; the vote itself
+    // is the player's agreement to re-stake the previous bet.
+    BettingManager.initialize(lobbyId, betAmount);
+    const placed = [];
+    for (const playerId of playerIds) {
+        const place = await BettingManager.placeBet(playerId, betAmount, lobbyId);
+        if (!place.success) {
+            logger.error('[REMATCH] placeBet failed', undefined, {
+                lobbyId,
+                playerId,
+                error: place.error,
+            });
+            break;
+        }
+        const confirm = await BettingManager.confirmBet(playerId, lobbyId);
+        if (!confirm.success) {
+            logger.error('[REMATCH] confirmBet failed', undefined, {
+                lobbyId,
+                playerId,
+                error: confirm.error,
+            });
+            break;
+        }
+        placed.push(playerId);
+    }
+    // If any bet failed to confirm, refund the ones that did so nobody
+    // pays for a round that won't start, then report back to all players.
+    if (placed.length !== playerIds.length) {
+        for (const playerId of placed) {
+            await BettingManager.refundBet(playerId, lobbyId);
+        }
+        BettingManager.cleanup(lobbyId);
+        lobby.clearRestartVotes(lobbyId);
+        broadcastToLobby(lobbyId, {
+            type: 'restart_failed',
+            reason: 'bet_placement_failed',
+            message: 'Could not place bets for rematch',
+        });
+        return;
+    }
+    await BettingManager.activateBets(lobbyId);
+    // Push the new balance to each player so their HUD pip counter
+    // updates immediately (otherwise the next `getUserPips` query happens
+    // when the game ends, which would briefly show the pre-deduction
+    // balance).
+    for (const playerId of playerIds) {
+        const balance = await getUserPips(playerId);
+        connections.send(playerId, {
+            type: 'pips_updated',
+            pips: balance,
+        });
+    }
+    lobby.clearRestartVotes(lobbyId);
+    logger.info('[REMATCH] starting after auto-bet', {
+        lobbyId,
+        betAmount,
+        playerCount: playerIds.length,
+    });
+    await startGameAfterBetting(lobbyId);
 }
 // Helper function to start game (used by both handleStartGame and handleRestartGame)
 async function startGameAfterBetting(lobbyId) {
@@ -939,56 +1371,10 @@ async function startGameAfterBetting(lobbyId) {
     const playerOrder = game.getPlayerOrder(lobbyId);
     const minAspectRatio = lobby.getMinAspectRatio(lobbyId);
     const gameState = game.getGameState(lobbyId);
-    // Collect all equipped items from all players for client-side preloading
-    const availableItems = [];
-    const seenItemIds = new Set();
-    for (const player of lobbyData.players) {
-        // Add dice
-        if (player.user.equippedDiceId && !seenItemIds.has(player.user.equippedDiceId)) {
-            seenItemIds.add(player.user.equippedDiceId);
-            const diceResult = await query('SELECT id, type, code, name, config FROM item_catalog WHERE id = $1', [player.user.equippedDiceId]);
-            if (diceResult.rows[0]) {
-                const row = diceResult.rows[0];
-                availableItems.push({
-                    id: row.id,
-                    type: row.type,
-                    code: row.code,
-                    name: row.name,
-                    config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-                });
-            }
-        }
-        // Add table
-        if (player.user.equippedTableId && !seenItemIds.has(player.user.equippedTableId)) {
-            seenItemIds.add(player.user.equippedTableId);
-            const tableResult = await query('SELECT id, type, code, name, config FROM item_catalog WHERE id = $1', [player.user.equippedTableId]);
-            if (tableResult.rows[0]) {
-                const row = tableResult.rows[0];
-                availableItems.push({
-                    id: row.id,
-                    type: row.type,
-                    code: row.code,
-                    name: row.name,
-                    config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-                });
-            }
-        }
-        // Add effect
-        if (player.user.equippedEffectId && !seenItemIds.has(player.user.equippedEffectId)) {
-            seenItemIds.add(player.user.equippedEffectId);
-            const effectResult = await query('SELECT id, type, code, name, config FROM item_catalog WHERE id = $1', [player.user.equippedEffectId]);
-            if (effectResult.rows[0]) {
-                const row = effectResult.rows[0];
-                availableItems.push({
-                    id: row.id,
-                    type: row.type,
-                    code: row.code,
-                    name: row.name,
-                    config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
-                });
-            }
-        }
-    }
+    // Collect all equipped items (DB-backed and client-supplied) for
+    // client-side preloading. See `buildAvailableItemsAndOverrides`.
+    const { availableItems, equipOverrides } = await buildAvailableItemsAndOverrides(lobbyData.players);
+    applyEquipOverridesToLobby(lobbyData, equipOverrides);
     // Build mode-specific data
     let modeData = {};
     if (lobbyData.gameMode === 'street_craps') {
@@ -1128,17 +1514,29 @@ async function handleThrowStart(userId, throwPower, effectId, selectedDice) {
     }
     // Use cached user data from connection
     const user = conn.user;
-    // Get dice config from cache (should be preloaded, so this is fast)
-    // If not in cache, load it (first time only)
+    // Prefer a client-supplied dice override (Yandex Cloud Save) over the
+    // server's DB-equipped dice. See `Connection.clientItems`.
+    const clientDice = connections.getClientItemOverride(userId, 'dice');
     let diceConfig = null;
-    if (user.equippedDiceId) {
+    let equippedDiceIdForBroadcast = user.equippedDiceId;
+    let diceSource;
+    if (clientDice && clientDice.config) {
+        diceConfig = clientDice.config;
+        equippedDiceIdForBroadcast = syntheticItemId(userId, 'dice');
+        diceSource = `client:${clientDice.code}`;
+    }
+    else if (user.equippedDiceId) {
         diceConfig = await lobby.getDiceConfig(user.equippedDiceId);
-        // Log if config is missing (should not happen if preloading works)
         if (!diceConfig) {
             logger.warn('Dice config not found for throw_start', { userId, diceId: user.equippedDiceId });
+            diceSource = `db:missing(${user.equippedDiceId})`;
+        }
+        else {
+            diceSource = `db:${user.equippedDiceId}`;
         }
     }
     else {
+        diceSource = 'default:classic_white';
         // Player has no equipped dice (standard dice) - use classic_white config from presets
         diceConfig = {
             baseColor: '#ffffff',
@@ -1155,6 +1553,12 @@ async function handleThrowStart(userId, throwPower, effectId, selectedDice) {
             bevelRadius: 0.16, // Match classic_white preset
         };
     }
+    logger.info('throw_start broadcast', {
+        userId,
+        lobbyId: conn.lobbyId,
+        diceSource,
+        broadcastDiceId: equippedDiceIdForBroadcast,
+    });
     // Broadcast throw_start to all other players with dice config and selected dice info
     // CRITICAL: This must arrive BEFORE throw_frame messages
     broadcastToLobby(conn.lobbyId, {
@@ -1163,15 +1567,33 @@ async function handleThrowStart(userId, throwPower, effectId, selectedDice) {
         playerNickname: user.nickname,
         throwPower,
         effectId,
-        equippedDiceId: user.equippedDiceId,
+        equippedDiceId: equippedDiceIdForBroadcast,
         diceConfig,
         selectedDice // Pass selected dice for Palmo's Dice rerolls
     }, userId);
+    // Remember this throw so a player who reconnects mid-flight gets the
+    // same throw_start as everyone else (otherwise they sit there with
+    // their own default dice config and never join the replay).
+    activeThrows.set(conn.lobbyId, {
+        playerId: userId,
+        playerNickname: user.nickname,
+        throwPower,
+        effectId,
+        equippedDiceId: equippedDiceIdForBroadcast,
+        diceConfig,
+        selectedDice,
+        startedAt: Date.now(),
+    });
 }
 async function handleThrowFrame(userId, frame) {
     const conn = connections.getConnection(userId);
     if (!conn?.lobbyId || !conn.inGame)
         return;
+    // Save last frame for this player (for reconnect)
+    if (!lastFrameStorage.has(conn.lobbyId)) {
+        lastFrameStorage.set(conn.lobbyId, new Map());
+    }
+    lastFrameStorage.get(conn.lobbyId).set(userId, frame);
     // Broadcast frame to all other players (no validation for speed)
     broadcastToLobby(conn.lobbyId, {
         type: 'throw_frame',
@@ -1231,6 +1653,12 @@ async function handleThrowEnd(userId, finalResult) {
         playerId: userId,
         finalResult
     }, userId);
+    // Throw is over — drop the active-throw record so a later reconnect
+    // doesn't replay a stale start.
+    const active = activeThrows.get(conn.lobbyId);
+    if (active && active.playerId === userId) {
+        activeThrows.delete(conn.lobbyId);
+    }
     // For game logic that needs full lobby data, load it only if needed
     const needsFullLobbyData = lobbyStatus.gameMode !== 'free_roll';
     // Process game logic based on mode
@@ -1726,6 +2154,10 @@ function broadcastTurnChange(lobbyId, playerId) {
     });
 }
 export function handleDisconnect(userId) {
+    // Pop the player out of the matchmaking queue first — they're gone,
+    // no point trying to match them. Safe to call even if they weren't
+    // queued.
+    matchmaking.handleDisconnect(userId);
     const conn = connections.getConnection(userId);
     if (conn) {
         console.log(`User ${conn.user.nickname} (${userId}) disconnected`);
@@ -2088,5 +2520,23 @@ async function handleSendReaction(userId, content) {
     // Send to all players in lobby using broadcastToLobby helper
     broadcastToLobby(conn.lobbyId, reactionMessage, userId);
     logger.info('Reaction sent', { userId, lobbyId: conn.lobbyId, content });
+}
+// === Player stats (Yandex profile widget / matchmaking level) ===
+async function handleSyncYandexPips(userId, pips) {
+    const result = await query(`UPDATE users
+       SET pips = $2
+     WHERE id = $1 AND platform = 'yandex' AND COALESCE(pips, 0) = 0
+     RETURNING id`, [userId, pips]);
+    if (result.rows.length === 0)
+        return;
+    await handleGetPlayerStats(userId);
+}
+async function handleGetPlayerStats(userId) {
+    const stats = await getPlayerStats(userId);
+    if (!stats) {
+        connections.send(userId, { type: 'player_stats', stats: null });
+        return;
+    }
+    connections.send(userId, { type: 'player_stats', stats });
 }
 //# sourceMappingURL=handlers.js.map
