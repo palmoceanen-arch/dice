@@ -1966,7 +1966,7 @@ export class GameSync {
   }
   
   // Get dice config for a specific player (preloaded or from lobby)
-  private getPlayerDiceConfig(playerId: number): any | null {
+  public getPlayerDiceConfig(playerId: number): any | null {
     (window as any).debugLog?.('DICE', `getPlayerDiceConfig(${playerId}) called`);
     
     // First try preloaded config (faster)
