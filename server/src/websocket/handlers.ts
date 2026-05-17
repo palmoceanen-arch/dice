@@ -704,36 +704,59 @@ async function handleLeaveLobby(userId: number): Promise<void> {
   
   const lobbyId = conn.lobbyId;
   
-  // Get pending invitation users before leaving (to notify them if lobby closes)
-  const pendingInviteUsers = await lobby.getPendingInvitationUsers(lobbyId);
-  
-  await lobby.leaveLobby(lobbyId, userId);
-  
   // Get updated pips balance
   const newPips = await getUserPips(userId);
   
-  connections.send(userId, { 
-    type: 'lobby_left',
-    newPips 
-  });
-  
-  // Check if lobby was closed (no players left)
-  const lobbyData = await lobby.getLobby(lobbyId);
-  if (!lobbyData || lobbyData.status === 'finished') {
-    // Notify all users with pending invitations that the lobby was closed
-    for (const invitedUserId of pendingInviteUsers) {
-      connections.send(invitedUserId, {
-        type: 'invitation_cancelled',
-        lobbyId,
-      });
+  if (conn.inGame) {
+    // During active game: mark as disconnected (allow reconnect within 30s)
+    lobby.markPlayerDisconnected(lobbyId, userId);
+    
+    // Clear connection state so the player's UI resets
+    conn.lobbyId = null;
+    conn.inGame = false;
+    
+    // Send lobby_left to the leaving player (UI resets to solo mode)
+    connections.send(userId, { 
+      type: 'lobby_left',
+      newPips 
+    });
+    
+    // Notify other players about disconnect (they will see reconnect countdown)
+    broadcastToLobby(lobbyId, {
+      type: 'player_disconnected',
+      oderId: userId,
+      reconnectTimeoutMs: 30000
+    }, userId);
+  } else {
+    // Not in game (voting/waiting): permanent leave
+    // Get pending invitation users before leaving (to notify them if lobby closes)
+    const pendingInviteUsers = await lobby.getPendingInvitationUsers(lobbyId);
+    
+    await lobby.leaveLobby(lobbyId, userId);
+    
+    connections.send(userId, { 
+      type: 'lobby_left',
+      newPips 
+    });
+    
+    // Check if lobby was closed (no players left)
+    const lobbyData = await lobby.getLobby(lobbyId);
+    if (!lobbyData || lobbyData.status === 'finished') {
+      // Notify all users with pending invitations that the lobby was closed
+      for (const invitedUserId of pendingInviteUsers) {
+        connections.send(invitedUserId, {
+          type: 'invitation_cancelled',
+          lobbyId,
+        });
+      }
     }
+    
+    // Notify other players
+    broadcastToLobby(lobbyId, {
+      type: 'player_left',
+      oderId: userId,
+    }, userId);
   }
-  
-  // Notify other players
-  broadcastToLobby(lobbyId, {
-    type: 'player_left',
-    oderId: userId,
-  }, userId);
   
   // Notify friends that user is back online (not in lobby anymore)
   notifyFriendsStatusChanged(userId, 'online');

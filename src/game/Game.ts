@@ -3372,15 +3372,23 @@ export class Game {
     const dice = this.dice[diceIndex];
     if (!dice) return;
     
-    // Apply emissive glow to each face material (dice uses materials[])
+    // Clone shared materials so highlighting one dice doesn't affect others
     const mesh = dice.mesh;
     const mats = mesh.material as THREE.MeshStandardMaterial | THREE.MeshStandardMaterial[];
     const matArr: THREE.MeshStandardMaterial[] = Array.isArray(mats) ? mats : [mats];
-    for (const mat of matArr) {
-      if (!(mat as any)._originalEmissive) {
-        (mat as any)._originalEmissive = mat.emissive.clone();
-        (mat as any)._originalEmissiveIntensity = mat.emissiveIntensity;
-      }
+    const clonedArr = matArr.map(mat => {
+      if ((mat as any)._isHighlightClone) return mat;
+      const clone = mat.clone() as THREE.MeshStandardMaterial;
+      (clone as any)._isHighlightClone = true;
+      (clone as any)._originalEmissive = mat.emissive.clone();
+      (clone as any)._originalEmissiveIntensity = mat.emissiveIntensity;
+      (clone as any)._sharedMaterial = mat;
+      return clone;
+    });
+    mesh.material = clonedArr;
+    
+    // Apply emissive glow to the cloned materials
+    for (const mat of clonedArr) {
       mat.emissive.setHex(0xFFD700);
       mat.emissiveIntensity = 0.6;
     }
@@ -3419,12 +3427,17 @@ export class Game {
     const mesh = dice.mesh;
     const mats = mesh.material as THREE.MeshStandardMaterial | THREE.MeshStandardMaterial[];
     const matArr: THREE.MeshStandardMaterial[] = Array.isArray(mats) ? mats : [mats];
-    for (const mat of matArr) {
-      if ((mat as any)._originalEmissive) {
-        mat.emissive.copy((mat as any)._originalEmissive);
-        mat.emissiveIntensity = (mat as any)._originalEmissiveIntensity || 0;
+    
+    // Restore original shared materials and dispose clones
+    const restoredArr = matArr.map(mat => {
+      if ((mat as any)._isHighlightClone && (mat as any)._sharedMaterial) {
+        const original = (mat as any)._sharedMaterial as THREE.MeshStandardMaterial;
+        mat.dispose();
+        return original;
       }
-    }
+      return mat;
+    });
+    mesh.material = restoredArr;
     
     // Remove outline mesh
     const outline = this.diceOutlineMeshes.get(diceIndex);
