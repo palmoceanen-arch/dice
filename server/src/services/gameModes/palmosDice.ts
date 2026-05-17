@@ -282,25 +282,17 @@ export const PalmosDiceMode: GameModeHandler = {
       // Check if game is over
       const gameOver = newScore >= palmosState.targetScore;
       
-      // End turn, move to next player (or null when the game ends so the
-      // client doesn't try to teleport dice to a "next" player).
+      // End turn, move to next player
       palmosState.currentRound = null;
-      const nextPlayer = gameOver ? null : getNextPlayer(state);
-      if (nextPlayer !== null) {
-        state.currentTurn = nextPlayer;
-        state.turnIndex = state.playerOrder.indexOf(nextPlayer);
-      }
-      
-      // When the game ends on this auto-take, compute winners so the client
-      // can render the victory banner with the correct nickname.
-      const winners = gameOver ? PalmosDiceMode.getWinners(state) : undefined;
+      const nextPlayer = getNextPlayer(state);
+      state.currentTurn = nextPlayer;
+      state.turnIndex = state.playerOrder.indexOf(nextPlayer);
       
       return {
-        outcome: gameOver ? 'game_over' : 'result',
+        outcome: 'result',
         message: `${hand.name}. +${hand.points} очков. Счёт: ${newScore}`,
         nextTurn: nextPlayer,
         gameOver,
-        winners,
         data: {
           dice: diceValues,
           hand: hand.name,

@@ -23,6 +23,26 @@ import { validateRoll } from '../utils/anti-fraud.js';
 // Key: lobbyId, Value: Map of playerId -> last frame data
 const lastFrameStorage = new Map<string, Map<number, any>>();
 
+// Tracks the throw currently being streamed for each lobby. When a player
+// reconnects mid-throw we replay a synthesized `throw_start` from this
+// state so the dice on their screen pick up the opponent's skin and join
+// the in-flight replay instead of staying frozen in their own default
+// configuration.
+interface ActiveThrowState {
+  playerId: number;
+  playerNickname: string;
+  throwPower: number;
+  effectId: number | null;
+  equippedDiceId: number | null | undefined;
+  diceConfig: Record<string, unknown> | null;
+  selectedDice?: number[];
+  startedAt: number;
+}
+const activeThrows = new Map<string, ActiveThrowState>();
+// Throws older than this are assumed to have ended without a `throw_end`
+// (player crashed, network died, etc.) and won't be replayed on reconnect.
+const ACTIVE_THROW_MAX_AGE_MS = 30_000;
+
 // Message is already validated by server.ts, so we receive typed data
 export async function handleMessage(ws: WebSocket, message: any, userId: number | null): Promise<number | null> {
   // Auth message - no userId required
@@ -441,6 +461,17 @@ function handleSetPlayerItems(
   connections.setClientItemOverride(userId, 'dice', items.dice);
   connections.setClientItemOverride(userId, 'table', items.table);
   connections.setClientItemOverride(userId, 'effect', items.effect);
+
+  // Log what the client pushed so we can diagnose the Yandex "opponents see
+  // white dice" bug from journalctl. Only logs slots that were actually
+  // sent (undefined slots are no-ops).
+  const summary: Record<string, string> = {};
+  if (items.dice !== undefined) summary.dice = items.dice ? items.dice.code : 'null';
+  if (items.table !== undefined) summary.table = items.table ? items.table.code : 'null';
+  if (items.effect !== undefined) summary.effect = items.effect ? items.effect.code : 'null';
+  if (Object.keys(summary).length > 0) {
+    logger.info('set_player_items received', { userId, ...summary });
+  }
 }
 
 // Synthetic, per-user item IDs for client-supplied dice/table/effect
@@ -480,12 +511,17 @@ export async function buildAvailableItemsAndOverrides(
   const availableItems: AvailableItem[] = [];
   const seenItemIds = new Set<number>();
   const equipOverrides: PlayerEquipOverride[] = [];
+  // Per-player diagnostic breakdown: which slot resolved via client
+  // override vs DB row. Logged once at the end so a single journalctl
+  // line tells you exactly what each opponent will render with.
+  const perPlayerSummary: Array<Record<string, unknown>> = [];
 
   for (const player of players) {
     const userId = player.user.id;
     if (!userId) continue;
 
     const override: PlayerEquipOverride = { userId };
+    const summary: Record<string, unknown> = { userId };
     const slots: Array<'dice' | 'table' | 'effect'> = ['dice', 'table', 'effect'];
     for (const slot of slots) {
       const clientItem = connections.getClientItemOverride(userId, slot);
@@ -513,6 +549,7 @@ export async function buildAvailableItemsAndOverrides(
         if (slot === 'dice') override.equippedDiceId = id;
         else if (slot === 'table') override.equippedTableId = id;
         else override.equippedEffectId = id;
+        summary[slot] = `client:${clientItem.code}`;
       } else if (dbItemId && !seenItemIds.has(dbItemId)) {
         seenItemIds.add(dbItemId);
         const result = await query<{ id: number; type: string; code: string; name: string; config: Record<string, unknown> | string | null }>(
@@ -528,7 +565,16 @@ export async function buildAvailableItemsAndOverrides(
             name: row.name,
             config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
           });
+          summary[slot] = `db:${row.code}`;
+        } else {
+          summary[slot] = `db:missing(${dbItemId})`;
         }
+      } else if (dbItemId) {
+        // Already in availableItems from a previous player — still record
+        // that this player resolved via DB so the log line is complete.
+        summary[slot] = `db:${dbItemId}`;
+      } else {
+        summary[slot] = 'none';
       }
     }
 
@@ -539,7 +585,14 @@ export async function buildAvailableItemsAndOverrides(
     ) {
       equipOverrides.push(override);
     }
+    perPlayerSummary.push(summary);
   }
+
+  logger.info('buildAvailableItemsAndOverrides', {
+    players: perPlayerSummary,
+    availableItemsCount: availableItems.length,
+    overridesCount: equipOverrides.length,
+  });
 
   return { availableItems, equipOverrides };
 }
@@ -980,25 +1033,23 @@ async function handleLeaveLobby(userId: number): Promise<void> {
     connections.send(userId, { type: 'error', message: 'Not in a lobby' });
     return;
   }
-  
+
   const lobbyId = conn.lobbyId;
-  
+
   // Get pending invitation users before leaving (to notify them if lobby closes)
   const pendingInviteUsers = await lobby.getPendingInvitationUsers(lobbyId);
-  
-  await lobby.leaveLobby(lobbyId, userId);
-  
+
+  const leaveResult = await lobby.leaveLobby(lobbyId, userId);
+
   // Get updated pips balance
   const newPips = await getUserPips(userId);
-  
-  connections.send(userId, { 
+
+  connections.send(userId, {
     type: 'lobby_left',
-    newPips 
+    newPips
   });
-  
-  // Check if lobby was closed (no players left)
-  const lobbyData = await lobby.getLobby(lobbyId);
-  if (!lobbyData || lobbyData.status === 'finished') {
+
+  if (leaveResult.closed) {
     // Notify all users with pending invitations that the lobby was closed
     for (const invitedUserId of pendingInviteUsers) {
       connections.send(invitedUserId, {
@@ -1006,14 +1057,32 @@ async function handleLeaveLobby(userId: number): Promise<void> {
         lobbyId,
       });
     }
+
+    // Any active throw belonging to this lobby is now meaningless.
+    activeThrows.delete(lobbyId);
   }
-  
-  // Notify other players
-  broadcastToLobby(lobbyId, {
-    type: 'player_left',
-    oderId: userId,
-  }, userId);
-  
+
+  if (leaveResult.closedReason === 'insufficient_players') {
+    // The game was in progress and this player's leave dropped the lobby
+    // below the playable threshold. Tell the remaining player(s) the game
+    // is over so their UI exits the in-game state instead of waiting on a
+    // turn that will never come.
+    for (const remainingUserId of leaveResult.remainingPlayers) {
+      connections.send(remainingUserId, {
+        type: 'game_ended_by_disconnect',
+        oderId: userId,
+        reason: 'opponent_left',
+      });
+    }
+  } else {
+    // Lobby still alive (or never had >1 player to begin with) — tell
+    // the rest of the lobby that this player is gone so their UI updates.
+    broadcastToLobby(lobbyId, {
+      type: 'player_left',
+      oderId: userId,
+    }, userId);
+  }
+
   // Notify friends that user is back online (not in lobby anymore)
   notifyFriendsStatusChanged(userId, 'online');
 }
@@ -1151,16 +1220,68 @@ async function handleReconnectGame(userId: number, lobbyId: string): Promise<voi
     diceCount,
   });
   
-  // Notify other players that this player reconnected
+  // Notify other players that this player reconnected. We piggy-back the
+  // reconnecting player's equipped items on this broadcast so peers who
+  // were already connected (i.e. they joined the lobby BEFORE this player
+  // came back online) can fill in the missing dice / table / effect
+  // configs in their local cache. Without this, the scenario
+  //   1. Both players disconnect mid-game.
+  //   2. Player A reconnects first \u2014 lobbyData.players at that point
+  //      does not include Player B, so A's `game_reconnected` payload
+  //      has no entry for B in `availableItems` and `playerDiceConfigs`
+  //      is empty for B.
+  //   3. Player B reconnects \u2014 A only learns about this through
+  //      `player_reconnected`, which historically carried no item data.
+  //      A then renders B's dice with the default skin (wrong colour).
+  // leaves A's view permanently stale until the next game.
   const player = lobbyData.players.find(p => p.oderId === userId);
   const playerNickname = player?.user?.nickname || 'Player';
-  
+
+  // Pull the just-reconnected player's items out of the already-built
+  // `availableItems` list (it's built from ALL currently-joined players
+  // so it already includes this player's gear).
+  const reconnectedPlayerItems = player
+    ? availableItems.filter((item) =>
+        item.id === player.user.equippedDiceId ||
+        item.id === player.user.equippedTableId ||
+        item.id === player.user.equippedEffectId
+      )
+    : [];
+
   broadcastToLobby(lobbyId, {
     type: 'player_reconnected',
     oderId: userId,
     nickname: playerNickname,
+    equippedDiceId: player?.user?.equippedDiceId ?? null,
+    equippedTableId: player?.user?.equippedTableId ?? null,
+    equippedEffectId: player?.user?.equippedEffectId ?? null,
+    availableItems: reconnectedPlayerItems,
   }, userId);
-  
+
+  // If another player was mid-throw when this player reconnected, replay
+  // a synthesized `throw_start` to them so their client picks up the
+  // opponent's dice skin and joins the in-flight streaming replay. We
+  // skip it when the reconnecting player IS the thrower (they own the
+  // throw locally) or when the throw is older than ACTIVE_THROW_MAX_AGE_MS
+  // (the original thrower probably crashed and never sent throw_end).
+  const active = activeThrows.get(lobbyId);
+  if (
+    active &&
+    active.playerId !== userId &&
+    Date.now() - active.startedAt < ACTIVE_THROW_MAX_AGE_MS
+  ) {
+    connections.send(userId, {
+      type: 'throw_start',
+      playerId: active.playerId,
+      playerNickname: active.playerNickname,
+      throwPower: active.throwPower,
+      effectId: active.effectId,
+      equippedDiceId: active.equippedDiceId,
+      diceConfig: active.diceConfig,
+      selectedDice: active.selectedDice,
+    });
+  }
+
   console.log(`[Game] Player ${userId} reconnected to game ${lobbyId}`);
 }
 
@@ -1343,47 +1464,35 @@ async function handleStartGame(userId: number): Promise<void> {
   }
 }
 
+// Rematch ("New Game") flow.
+//
+// Every player in the post-game lobby now has a "New Game" button (not
+// just the host); each press sends `restart_game`. The server tracks
+// which players have agreed in `lobby.restartVotes` and broadcasts a
+// running tally so each client can show progress ("1/2 ready"). When
+// every currently-joined player has agreed we auto-place the saved bet
+// for each of them (or skip betting entirely for no-bet lobbies) and
+// start the next round, with no manual betting UI in between. If any
+// player can't afford the bet, the vote is reset and an error is sent
+// to everyone so the modal can re-enable the button.
 async function handleRestartGame(userId: number): Promise<void> {
   const conn = connections.getConnection(userId);
   if (!conn?.lobbyId) {
     connections.send(userId, { type: 'error', message: 'Not in a lobby' });
     return;
   }
-  
-  const lobbyData = await lobby.getLobby(conn.lobbyId);
+  const lobbyId = conn.lobbyId;
+
+  const lobbyData = await lobby.getLobby(lobbyId);
   if (!lobbyData) {
     connections.send(userId, { type: 'error', message: 'Lobby not found' });
     return;
   }
-  
-  // Any player in the lobby can request a rematch — not just the host. This
-  // mirrors what the client now exposes (Rematch button visible for everyone)
-  // and prevents the second player being stuck on an Exit-only screen.
-  const isInLobby = lobbyData.players.some((p: { user: { id: number } }) => p.user.id === userId);
-  if (!isInLobby) {
-    connections.send(userId, { type: 'error', message: 'You are not in this lobby' });
-    return;
-  }
-  
-  // Idempotency: if betting is already initialized for this lobby (because
-  // another player already pressed Rematch), just re-send the betting UI to
-  // the requester rather than re-initializing and wiping existing bets.
-  if (BettingManager.isActive(conn.lobbyId)) {
-    const balance = await getUserPips(userId);
-    const state = BettingManager.getState(conn.lobbyId);
-    connections.send(userId, {
-      type: 'show_betting_ui',
-      minBet: state?.minBet ?? 10,
-      balance,
-    });
-    return;
-  }
-  
-  // Check if betting is required (2+ players)
-  const playerIds = lobby.getLobbyPlayers(conn.lobbyId);
+
+  const playerIds = lobby.getLobbyPlayers(lobbyId);
 
   // Refuse to restart a multiplayer match with a single player. Without
-  // this guard, a host whose opponents pressed "Exit" on the post-game
+  // this guard, a player whose opponents pressed "Exit" on the post-game
   // result modal can keep pressing "New Game" and play with themselves.
   // The Yandex `MultiplayerLobbyGuard` already auto-leaves the lobby on
   // the first opponent drop client-side, but raw `restart_game` messages
@@ -1393,33 +1502,144 @@ async function handleRestartGame(userId: number): Promise<void> {
   // match yet.
   if (playerIds.length < 2) {
     connections.send(userId, {
-      type: "error",
-      message: "Need at least 2 players to start a new round",
+      type: 'error',
+      message: 'Need at least 2 players to start a new round',
     });
     return;
   }
 
-  if (playerIds.length >= 2) {
-    // Initialize betting for new game
-    BettingManager.initialize(conn.lobbyId, lobby.getLobbyBetAmount(conn.lobbyId));
-    logger.info('[BETTING] Initialized for restart', { lobbyId: conn.lobbyId, playerCount: playerIds.length });
-    
-    // Show betting UI to all players with their balances
-    for (const playerId of playerIds) {
-      const balance = await getUserPips(playerId);
-      connections.send(playerId, {
-        type: 'show_betting_ui',
-        minBet: 10,
-        balance
-      });
-    }
-    
-    logger.info('[BETTING] Showing betting UI for restart', { lobbyId: conn.lobbyId });
-    return; // Wait for bets to be placed
+  // Reject votes from players who aren't actually in this lobby anymore
+  // (e.g. they leftLobby() mid-vote and somehow still managed to fire a
+  // delayed restart_game).
+  if (!playerIds.includes(userId)) {
+    connections.send(userId, { type: 'error', message: 'You are not in this lobby' });
+    return;
   }
-  
-  // Single player - start game immediately
-  await startGameAfterBetting(conn.lobbyId);
+
+  lobby.addRestartVote(lobbyId, userId);
+  const votes = lobby.getRestartVotes(lobbyId).filter((id) => playerIds.includes(id));
+
+  // Tell everyone how the rematch vote stands so each client can update
+  // its post-game modal (button -> "Waiting for opponent…", show count).
+  broadcastToLobby(lobbyId, {
+    type: 'restart_vote_update',
+    votedPlayerIds: votes,
+    totalPlayers: playerIds.length,
+  });
+
+  logger.info('[REMATCH] restart_game vote', {
+    lobbyId,
+    voter: userId,
+    votes: votes.length,
+    total: playerIds.length,
+  });
+
+  // Still missing votes? Wait for the other player(s) to press New Game.
+  if (votes.length < playerIds.length) {
+    return;
+  }
+
+  // All current players agreed — time to deal with bets and (re)start.
+  const skipBetting = lobby.isNoBetLobby(lobbyId);
+  const betAmount = lobby.getLobbyBetAmount(lobbyId);
+
+  if (skipBetting || betAmount <= 0) {
+    logger.info('[REMATCH] starting without betting', {
+      lobbyId,
+      playerCount: playerIds.length,
+    });
+    lobby.clearRestartVotes(lobbyId);
+    await startGameAfterBetting(lobbyId);
+    return;
+  }
+
+  // Pre-flight pip check so we don't half-place bets and then bail out.
+  const balances = await Promise.all(
+    playerIds.map(async (id) => ({ id, pips: await getUserPips(id) }))
+  );
+  const broke = balances.filter((b) => b.pips < betAmount);
+  if (broke.length > 0) {
+    lobby.clearRestartVotes(lobbyId);
+    const brokeIds = broke.map((b) => b.id);
+    logger.info('[REMATCH] insufficient pips for rematch', {
+      lobbyId,
+      betAmount,
+      brokeIds,
+    });
+    broadcastToLobby(lobbyId, {
+      type: 'restart_failed',
+      reason: 'insufficient_pips',
+      brokePlayerIds: brokeIds,
+      betAmount,
+      message: 'Not enough pips for the current bet',
+    });
+    return;
+  }
+
+  // Auto-place + auto-confirm each player's bet at the saved bet amount.
+  // We skip the show_betting_ui round-trip entirely; the vote itself
+  // is the player's agreement to re-stake the previous bet.
+  BettingManager.initialize(lobbyId, betAmount);
+  const placed: number[] = [];
+  for (const playerId of playerIds) {
+    const place = await BettingManager.placeBet(playerId, betAmount, lobbyId);
+    if (!place.success) {
+      logger.error('[REMATCH] placeBet failed', undefined, {
+        lobbyId,
+        playerId,
+        error: place.error,
+      });
+      break;
+    }
+    const confirm = await BettingManager.confirmBet(playerId, lobbyId);
+    if (!confirm.success) {
+      logger.error('[REMATCH] confirmBet failed', undefined, {
+        lobbyId,
+        playerId,
+        error: confirm.error,
+      });
+      break;
+    }
+    placed.push(playerId);
+  }
+
+  // If any bet failed to confirm, refund the ones that did so nobody
+  // pays for a round that won't start, then report back to all players.
+  if (placed.length !== playerIds.length) {
+    for (const playerId of placed) {
+      await BettingManager.refundBet(playerId, lobbyId);
+    }
+    BettingManager.cleanup(lobbyId);
+    lobby.clearRestartVotes(lobbyId);
+    broadcastToLobby(lobbyId, {
+      type: 'restart_failed',
+      reason: 'bet_placement_failed',
+      message: 'Could not place bets for rematch',
+    });
+    return;
+  }
+
+  await BettingManager.activateBets(lobbyId);
+
+  // Push the new balance to each player so their HUD pip counter
+  // updates immediately (otherwise the next `getUserPips` query happens
+  // when the game ends, which would briefly show the pre-deduction
+  // balance).
+  for (const playerId of playerIds) {
+    const balance = await getUserPips(playerId);
+    connections.send(playerId, {
+      type: 'pips_updated',
+      pips: balance,
+    });
+  }
+
+  lobby.clearRestartVotes(lobbyId);
+  logger.info('[REMATCH] starting after auto-bet', {
+    lobbyId,
+    betAmount,
+    playerCount: playerIds.length,
+  });
+  await startGameAfterBetting(lobbyId);
 }
 
 // Helper function to start game (used by both handleStartGame and handleRestartGame)
@@ -1607,15 +1827,21 @@ async function handleThrowStart(userId: number, throwPower: number, effectId: nu
   const clientDice = connections.getClientItemOverride(userId, 'dice');
   let diceConfig: Record<string, unknown> | null = null;
   let equippedDiceIdForBroadcast: number | null | undefined = user.equippedDiceId;
+  let diceSource: string;
   if (clientDice && clientDice.config) {
     diceConfig = clientDice.config;
     equippedDiceIdForBroadcast = syntheticItemId(userId, 'dice');
+    diceSource = `client:${clientDice.code}`;
   } else if (user.equippedDiceId) {
     diceConfig = await lobby.getDiceConfig(user.equippedDiceId);
     if (!diceConfig) {
       logger.warn('Dice config not found for throw_start', { userId, diceId: user.equippedDiceId });
+      diceSource = `db:missing(${user.equippedDiceId})`;
+    } else {
+      diceSource = `db:${user.equippedDiceId}`;
     }
   } else {
+    diceSource = 'default:classic_white';
     // Player has no equipped dice (standard dice) - use classic_white config from presets
     diceConfig = {
       baseColor: '#ffffff',
@@ -1632,7 +1858,14 @@ async function handleThrowStart(userId: number, throwPower: number, effectId: nu
       bevelRadius: 0.16, // Match classic_white preset
     };
   }
-  
+
+  logger.info('throw_start broadcast', {
+    userId,
+    lobbyId: conn.lobbyId,
+    diceSource,
+    broadcastDiceId: equippedDiceIdForBroadcast,
+  });
+
   // Broadcast throw_start to all other players with dice config and selected dice info
   // CRITICAL: This must arrive BEFORE throw_frame messages
   broadcastToLobby(conn.lobbyId, {
@@ -1645,6 +1878,20 @@ async function handleThrowStart(userId: number, throwPower: number, effectId: nu
     diceConfig,
     selectedDice // Pass selected dice for Palmo's Dice rerolls
   }, userId);
+
+  // Remember this throw so a player who reconnects mid-flight gets the
+  // same throw_start as everyone else (otherwise they sit there with
+  // their own default dice config and never join the replay).
+  activeThrows.set(conn.lobbyId, {
+    playerId: userId,
+    playerNickname: user.nickname,
+    throwPower,
+    effectId,
+    equippedDiceId: equippedDiceIdForBroadcast,
+    diceConfig,
+    selectedDice,
+    startedAt: Date.now(),
+  });
 }
 
 async function handleThrowFrame(userId: number, frame: any): Promise<void> {
@@ -1720,7 +1967,14 @@ async function handleThrowEnd(userId: number, finalResult: { dice1: number; dice
     playerId: userId,
     finalResult
   }, userId);
-  
+
+  // Throw is over — drop the active-throw record so a later reconnect
+  // doesn't replay a stale start.
+  const active = activeThrows.get(conn.lobbyId);
+  if (active && active.playerId === userId) {
+    activeThrows.delete(conn.lobbyId);
+  }
+
   // For game logic that needs full lobby data, load it only if needed
   const needsFullLobbyData = lobbyStatus.gameMode !== 'free_roll';
   
