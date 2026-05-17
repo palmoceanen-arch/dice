@@ -69,7 +69,16 @@ function mergeDiceConfig(input: DiceConfig): DiceConfig {
 //             discoverable when occluded.
 const OUTLINE_COLOR = 0xFFD700;
 const OUTLINE_SCALE = 1.06;
-const OUTLINE_GHOST_OPACITY = 0.35;
+// Through-occluder silhouette opacity. Rendered via a `depthTest:false`
+// pass so the rim around the die stays visible even when the die rests
+// on the table (the table mesh would otherwise hide the bottom of the
+// outline). At 0.35 the rim was too faint to see through the felt /
+// leather / wood materials, so the player couldn't tell which die was
+// selected unless they tilted the camera. 0.85 keeps the see-through
+// rim distinct without looking like a separate opaque highlight on top
+// of the visible silhouette (the main pass at opacity 1 still draws on
+// top wherever depth allows).
+const OUTLINE_GHOST_OPACITY = 0.85;
 
 export class Dice {
   mesh: THREE.Mesh;
