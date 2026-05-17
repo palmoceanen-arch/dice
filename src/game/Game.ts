@@ -2649,19 +2649,24 @@ export class Game {
     const isMultiplayer = this.gameSync.isMultiplayerActive();
     const resultEl = document.getElementById('result');
     const boostIcon = document.getElementById('boost-icon');
-    
-    (window as any).debugLog?.('UI', `updateUIVisibility: multiplayer=${isMultiplayer}, result=${!!resultEl}, boost=${!!boostIcon}`);
-    
+    // Yandex-only floating chat button; absent on Telegram (the wheel
+    // there is triggered by clicking the result text directly).
+    const chatIcon = document.getElementById('chat-icon');
+
+    (window as any).debugLog?.('UI', `updateUIVisibility: multiplayer=${isMultiplayer}, result=${!!resultEl}, boost=${!!boostIcon}, chat=${!!chatIcon}`);
+
     if (isMultiplayer) {
-      // In multiplayer: show result, hide boost icon
+      // In multiplayer: show result + chat, hide boost icon
       if (resultEl) resultEl.style.display = '';
       if (boostIcon) boostIcon.style.display = 'none';
-      (window as any).debugLog?.('UI', 'Multiplayer mode: result visible, boost hidden');
+      if (chatIcon) chatIcon.style.display = 'flex';
+      (window as any).debugLog?.('UI', 'Multiplayer mode: result+chat visible, boost hidden');
     } else {
-      // In online mode: hide result, show boost icon
+      // In online mode: hide result + chat, show boost icon
       if (resultEl) resultEl.style.display = 'none';
       if (boostIcon) boostIcon.style.display = 'flex';
-      (window as any).debugLog?.('UI', 'Online mode: result hidden, boost visible');
+      if (chatIcon) chatIcon.style.display = 'none';
+      (window as any).debugLog?.('UI', 'Online mode: result+chat hidden, boost visible');
     }
   }
   

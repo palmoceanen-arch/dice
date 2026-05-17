@@ -158,26 +158,34 @@ function ensureStyles(): void {
     #boost-icon:active { transform: translateX(-50%) scale(0.95); }
     #boost-icon svg { filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4)); }
 
-    /* Chat / emoji wheel button. Sits a bit to the right of the boost
-       icon at the bottom of the idle screen so both are reachable with
-       one hand on mobile. Opens ReactionWheel.openWheelPublic(). */
-    .yui-chat-btn {
+    /* Chat / emoji wheel button. Mirrors the boost icon's bottom inset
+       and dimensions but is anchored to the bottom-right corner of the
+       viewport instead of bottom-center, so during a multiplayer match
+       (where this button is shown — see Game.updateUIVisibility) it
+       doesn't overlap any of the in-game HUD elements.
+
+       Hidden by default; only revealed during an active multiplayer
+       game, matching the Telegram build where ReactionWheel is only
+       accessible while in a multiplayer match. */
+    #chat-icon {
       position: fixed;
-      bottom: 26px;
-      left: calc(50% + 48px);
-      width: 44px; height: 44px;
-      border-radius: 50%;
+      bottom: 20px;
+      right: 20px;
+      width: 56px;
+      height: 56px;
       background: rgba(0, 0, 0, 0.55);
       border: 0; color: #fff;
-      display: flex; align-items: center; justify-content: center;
+      border-radius: 50%;
+      display: none;
+      align-items: center; justify-content: center;
       cursor: pointer; pointer-events: auto;
       z-index: 150;
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
       transition: transform 0.2s, background 0.2s;
     }
-    .yui-chat-btn:hover { transform: scale(1.08); background: rgba(0, 0, 0, 0.75); }
-    .yui-chat-btn:active { transform: scale(0.95); }
-    .yui-chat-btn svg { filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4)); }
+    #chat-icon:hover { transform: scale(1.08); background: rgba(0, 0, 0, 0.75); }
+    #chat-icon:active { transform: scale(0.95); }
+    #chat-icon svg { filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4)); }
     @keyframes pulse {
       0%, 100% { transform: translateX(-50%) scale(1); }
       50% { transform: translateX(-50%) scale(1.12); }
@@ -234,9 +242,11 @@ const ICON_BOOST = `
   </svg>
 `;
 
-// Speech-bubble glyph for the chat / emoji wheel button.
+// Speech-bubble glyph for the chat / emoji wheel button. Same dimensions
+// as the boost zap glyph (32x32) so both icons read at the same visual
+// weight when the button shows up during a multiplayer game.
 const ICON_CHAT = `
-  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
     <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
   </svg>
 `;
@@ -349,12 +359,12 @@ export class SoloUI {
   }
 
   /**
-   * Mount the chat / emoji wheel button next to the boost icon. Opens
-   * the shared ReactionWheel that the Telegram build already uses
-   * during multiplayer matches. In the Yandex solo build it surfaces
-   * the same expressive emoji/text reactions during gameplay — they
-   * render as floating messages in the corner via the stub wsClient
-   * (no network traffic).
+   * Mount the chat / emoji wheel button in the bottom-right corner.
+   * Mirrors the Telegram build's reaction flow, where the ReactionWheel
+   * is only accessible during an active multiplayer match. We give the
+   * button id `chat-icon` so `Game.updateUIVisibility()` can toggle it
+   * in lockstep with `#boost-icon` (boost visible on idle, chat visible
+   * during multiplayer).
    *
    * main.yandex.ts is responsible for constructing the ReactionWheel
    * and exposing it as `window.reactionWheel`. We just attach the
@@ -362,7 +372,7 @@ export class SoloUI {
    */
   private mountChatButton(): void {
     const button = document.createElement('button');
-    button.className = 'yui-chat-btn';
+    button.id = 'chat-icon';
     button.type = 'button';
     button.setAttribute('aria-label', 'Reactions');
     button.innerHTML = ICON_CHAT;
