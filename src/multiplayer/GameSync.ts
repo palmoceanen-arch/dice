@@ -73,6 +73,10 @@ export class GameSync {
   
   // Flag to prevent double reset from game result + turn_changed
   private diceResetScheduled = false;
+  
+  // Last bet amount confirmed for the current/previous game (used to display
+  // the carryover bet in the rematch dialog). Pulled from bet_confirmed.
+  private myLastBet = 0;
 
   constructor(game: Game) {
     this.game = game;
@@ -81,6 +85,13 @@ export class GameSync {
   }
 
   private setupEventListeners() {
+    // Track the user's confirmed bet so we can show it in the rematch dialog.
+    wsClient.on('bet_confirmed', (data: any) => {
+      if (wsClient.user && data.userId === wsClient.user.id && typeof data.amount === 'number') {
+        this.myLastBet = data.amount;
+      }
+    });
+    
     // Game started
     wsClient.on('game_started', (data: any) => {
       (window as any).debugLog?.('GAME', '========== GAME STARTED ==========');
@@ -1317,11 +1328,28 @@ export class GameSync {
     
     if (outcome === 'game_over' || gameOver) {
       // Game over - check this FIRST before other conditions
-      const winnerName = this.getPlayerNickname(winners?.[0]);
-      const winnerScore = scores?.[winners?.[0]] || newScore || 0;
+      const winnerId = winners?.[0];
+      // If the server didn't include a winners array (legacy clients / older
+      // server build), fall back to the player with the highest score in the
+      // payload so we never display "Unknown wins".
+      let resolvedWinnerId: number | string | null | undefined = winnerId;
+      if ((resolvedWinnerId === null || resolvedWinnerId === undefined) && scores) {
+        const entries = Object.entries(scores) as Array<[string, number]>;
+        if (entries.length > 0) {
+          entries.sort((a, b) => b[1] - a[1]);
+          resolvedWinnerId = entries[0][0];
+        }
+      }
+      const winnerName = this.getPlayerNickname(resolvedWinnerId);
+      const winnerScoreLookup = resolvedWinnerId !== null && resolvedWinnerId !== undefined
+        ? (scores?.[resolvedWinnerId as any] ?? scores?.[String(resolvedWinnerId)])
+        : undefined;
+      const winnerScore = winnerScoreLookup ?? newScore ?? 0;
       
       // Check if there's a payout for the winner
-      const payout = payouts?.[winners?.[0]];
+      const payout = resolvedWinnerId !== null && resolvedWinnerId !== undefined
+        ? (payouts?.[resolvedWinnerId as any] ?? payouts?.[String(resolvedWinnerId)])
+        : undefined;
       
       
       if (payout && payout > 0) {
@@ -1336,7 +1364,11 @@ export class GameSync {
       autoRemove = false;
       
       // Celebrate winner
-      if (winners?.[0] === wsClient.user?.id) {
+      const meId = wsClient.user?.id;
+      const winnerIdNum = resolvedWinnerId !== null && resolvedWinnerId !== undefined
+        ? Number(resolvedWinnerId)
+        : null;
+      if (winnerIdNum !== null && winnerIdNum === meId) {
         this.celebrateWinner();
       }
     } else if (bust) {
@@ -1386,14 +1418,47 @@ export class GameSync {
     
     resultEl.textContent = displayMessage;
     
-    // Add New Game button for host if game is over
-    if (showNewGameButton && wsClient.isHost) {
+    // Add Rematch + Exit buttons when the game is over. Both players (host
+    // or not) get the same controls so either side can trigger the rematch.
+    if (showNewGameButton) {
       const buttonContainer = document.createElement('div');
-      buttonContainer.style.marginTop = '16px';
+      buttonContainer.style.cssText = `
+        margin-top: 16px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+      `;
       
-      const newGameBtn = document.createElement('button');
-      newGameBtn.textContent = 'New Game';
-      newGameBtn.style.cssText = `
+      // Show the current bet (if any) so the player knows what they're
+      // committing to before clicking Rematch.
+      const myPips = typeof this.game.getPips === 'function' ? this.game.getPips() : 0;
+      const lastBet = this.myLastBet;
+      if (lastBet > 0) {
+        const betLine = document.createElement('div');
+        betLine.style.cssText = `
+          font-size: 13px;
+          opacity: 0.85;
+          margin-bottom: 4px;
+        `;
+        const canAfford = myPips >= lastBet;
+        const betLabel = t('gameResults.bet') || 'Bet';
+        const insufficient = t('gameResults.insufficientPips') || 'insufficient pips';
+        betLine.textContent = canAfford
+          ? `${betLabel}: ${lastBet} pips`
+          : `${betLabel}: ${lastBet} pips (${insufficient})`;
+        buttonContainer.appendChild(betLine);
+      }
+      
+      const buttonRow = document.createElement('div');
+      buttonRow.style.cssText = `
+        display: flex;
+        gap: 8px;
+      `;
+      
+      const rematchBtn = document.createElement('button');
+      rematchBtn.textContent = t('gameResults.rematch') || 'Rematch';
+      rematchBtn.style.cssText = `
         padding: 10px 24px;
         background: #4CAF50;
         border: none;
@@ -1404,19 +1469,46 @@ export class GameSync {
         cursor: pointer;
         font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       `;
-      newGameBtn.addEventListener('click', () => {
+      // If the player can't afford the carryover bet, disable rematch.
+      if (lastBet > 0 && myPips < lastBet) {
+        rematchBtn.disabled = true;
+        rematchBtn.style.opacity = '0.5';
+        rematchBtn.style.cursor = 'not-allowed';
+      }
+      rematchBtn.addEventListener('click', () => {
+        if (rematchBtn.disabled) return;
         resultEl.remove();
         wsClient.restartGame();
       });
       
-      buttonContainer.appendChild(newGameBtn);
+      const exitBtn = document.createElement('button');
+      exitBtn.textContent = t('gameResults.exit') || 'Exit';
+      exitBtn.style.cssText = `
+        padding: 10px 24px;
+        background: rgba(255, 255, 255, 0.15);
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        border-radius: 8px;
+        color: white;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      `;
+      exitBtn.addEventListener('click', () => {
+        resultEl.remove();
+        wsClient.leaveLobby();
+      });
+      
+      buttonRow.appendChild(rematchBtn);
+      buttonRow.appendChild(exitBtn);
+      buttonContainer.appendChild(buttonRow);
       resultEl.appendChild(buttonContainer);
     }
     
     document.body.appendChild(resultEl);
     
-    // Click to close (for non-host players or non-game-over)
-    if (!showNewGameButton || !wsClient.isHost) {
+    // Click to close only when there are no action buttons (non-game-over results)
+    if (!showNewGameButton) {
       resultEl.style.cursor = 'pointer';
       resultEl.addEventListener('click', () => resultEl.remove());
     }
@@ -1841,15 +1933,21 @@ export class GameSync {
     }, 250);
   }
   
-  private getPlayerNickname(playerId: number | null): string {
-    if (!playerId) return 'Unknown';
-    if (playerId === wsClient.user?.id) return wsClient.user.nickname;
+  private getPlayerNickname(playerId: number | string | null | undefined): string {
+    if (playerId === null || playerId === undefined) return 'Unknown';
+    // Normalize to number — server JSON may serialize player IDs as strings
+    // in some payloads (e.g. when used as object keys), but the players Map
+    // is keyed by numeric IDs.
+    const id = typeof playerId === 'number' ? playerId : Number(playerId);
+    if (!Number.isFinite(id) || id <= 0) return 'Unknown';
+    
+    if (id === wsClient.user?.id) return wsClient.user.nickname;
     
     // Get from stored players map
-    const nickname = this.gameState.players.get(playerId);
+    const nickname = this.gameState.players.get(id);
     if (nickname) return nickname;
     
-    return `Player${playerId}`;
+    return `Player${id}`;
   }
   
   private showOtherPlayerRoll(data: DiceRollData) {

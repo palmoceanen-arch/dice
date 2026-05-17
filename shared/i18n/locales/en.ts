@@ -447,6 +447,12 @@ First player to reach 200 or more points wins!`,
     
     // Palmo's Dice
     bust: '🔥 BUST!',
+    
+    // Rematch dialog
+    rematch: 'Rematch',
+    exit: 'Exit',
+    bet: 'Bet',
+    insufficientPips: 'insufficient pips',
   },
 
   // Reactions

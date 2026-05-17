@@ -1351,14 +1351,54 @@ async function handleRestartGame(userId: number): Promise<void> {
   }
   
   const lobbyData = await lobby.getLobby(conn.lobbyId);
-  if (!lobbyData || lobbyData.hostId !== userId) {
-    connections.send(userId, { type: 'error', message: 'Only host can restart the game' });
+  if (!lobbyData) {
+    connections.send(userId, { type: 'error', message: 'Lobby not found' });
+    return;
+  }
+  
+  // Any player in the lobby can request a rematch — not just the host. This
+  // mirrors what the client now exposes (Rematch button visible for everyone)
+  // and prevents the second player being stuck on an Exit-only screen.
+  const isInLobby = lobbyData.players.some((p: { user: { id: number } }) => p.user.id === userId);
+  if (!isInLobby) {
+    connections.send(userId, { type: 'error', message: 'You are not in this lobby' });
+    return;
+  }
+  
+  // Idempotency: if betting is already initialized for this lobby (because
+  // another player already pressed Rematch), just re-send the betting UI to
+  // the requester rather than re-initializing and wiping existing bets.
+  if (BettingManager.isActive(conn.lobbyId)) {
+    const balance = await getUserPips(userId);
+    const state = BettingManager.getState(conn.lobbyId);
+    connections.send(userId, {
+      type: 'show_betting_ui',
+      minBet: state?.minBet ?? 10,
+      balance,
+    });
     return;
   }
   
   // Check if betting is required (2+ players)
   const playerIds = lobby.getLobbyPlayers(conn.lobbyId);
-  
+
+  // Refuse to restart a multiplayer match with a single player. Without
+  // this guard, a host whose opponents pressed "Exit" on the post-game
+  // result modal can keep pressing "New Game" and play with themselves.
+  // The Yandex `MultiplayerLobbyGuard` already auto-leaves the lobby on
+  // the first opponent drop client-side, but raw `restart_game` messages
+  // (devtools, modded client) can bypass that — this is the server-side
+  // safety net. `handleStartGame` intentionally still allows 1-player
+  // starts for solo Free Roll lobbies that have not had a multiplayer
+  // match yet.
+  if (playerIds.length < 2) {
+    connections.send(userId, {
+      type: "error",
+      message: "Need at least 2 players to start a new round",
+    });
+    return;
+  }
+
   if (playerIds.length >= 2) {
     // Initialize betting for new game
     BettingManager.initialize(conn.lobbyId, lobby.getLobbyBetAmount(conn.lobbyId));
