@@ -414,10 +414,43 @@ export class DiceSync {
       return;
     }
     
-    // Start timer on first frame batch
+    // Start timer on first frame batch. Align replayStartTime with the
+    // first received frame's `time`. Frames are timestamped relative to
+    // the original throw start (e.g. ms since recordStartTime on the
+    // thrower's side). For a normal replay the first frame has time ≈ 0
+    // so this is equivalent to `Date.now()`. For a mid-throw reconnect
+    // the first received frame can have time = 2000+, and without the
+    // shift `playbackTime` (=elapsed - bufferDelay) sits at 0 while the
+    // earliest frame is at 2000, leaving the dice frozen at one position
+    // for several seconds until elapsed catches up. Shifting the start
+    // back by `firstFrameTime` lets the replay jump straight to the
+    // live point of the throw.
     if (this.replayStartTime === 0) {
-      this.replayStartTime = Date.now();
-      (window as any).debugLog?.('STREAM', `Playback started: ${frameCount} frames, ${this.soundEvents.length} sounds, after ${waitTime}ms`);
+      let firstFrameTime = 0;
+      for (const frames of this.streamingFrames) {
+        if (frames.length > 0) {
+          const t = frames[0].time;
+          if (firstFrameTime === 0 || t < firstFrameTime) {
+            firstFrameTime = t;
+          }
+        }
+      }
+      this.replayStartTime = Date.now() - firstFrameTime;
+      // Sounds whose `time` is older than the first received frame come
+      // from before we joined the throw — mark them as already-played so
+      // we don't fire them all at once when playback starts.
+      if (firstFrameTime > 0) {
+        let skipUpTo = -1;
+        for (let i = 0; i < this.soundEvents.length; i++) {
+          if (this.soundEvents[i].time < firstFrameTime) {
+            skipUpTo = i;
+          } else {
+            break;
+          }
+        }
+        this.lastPlayedSoundIndex = skipUpTo;
+      }
+      (window as any).debugLog?.('STREAM', `Playback started: ${frameCount} frames, ${this.soundEvents.length} sounds, after ${waitTime}ms, offset=${firstFrameTime}ms`);
     }
     
     const now = Date.now();
