@@ -1,6 +1,9 @@
+export type AuthPlatform = 'telegram' | 'yandex';
 export interface User {
     id: number;
-    telegramId: number;
+    telegramId: number | null;
+    yandexId: string | null;
+    platform: AuthPlatform;
     nickname: string;
     telegramUsername: string | null;
     firstName: string | null;
@@ -10,8 +13,22 @@ export interface User {
     equippedEffectId: number | null;
     referralCode?: string | null;
     pips?: number;
+    xp?: number;
+    level?: number;
+    gamesPlayed?: number;
+    wins?: number;
+    losses?: number;
     lastOnline: Date;
     createdAt: Date;
+}
+export interface PlayerStats {
+    userId: number;
+    xp: number;
+    level: number;
+    gamesPlayed: number;
+    wins: number;
+    losses: number;
+    pips: number;
 }
 export interface TelegramUser {
     id: number;
@@ -19,6 +36,14 @@ export interface TelegramUser {
     last_name?: string;
     username?: string;
     photo_url?: string;
+}
+export interface YandexPlayer {
+    uuid: string;
+    publicName?: string;
+    avatarUrlSmall?: string;
+    avatarUrlMedium?: string;
+    avatarUrlLarge?: string;
+    lang?: string;
 }
 export type ItemType = 'dice' | 'table' | 'effect' | 'key';
 export type ItemRarity = 'common' | 'rare' | 'epic' | 'legendary';
@@ -63,6 +88,8 @@ export interface Lobby {
     status: LobbyStatus;
     selectedTableId: number | null;
     maxPlayers: number;
+    noBet: boolean;
+    betAmount: number;
     createdAt: Date;
     startedAt: Date | null;
     finishedAt: Date | null;

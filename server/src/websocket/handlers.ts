@@ -1220,14 +1220,42 @@ async function handleReconnectGame(userId: number, lobbyId: string): Promise<voi
     diceCount,
   });
   
-  // Notify other players that this player reconnected
+  // Notify other players that this player reconnected. We piggy-back the
+  // reconnecting player's equipped items on this broadcast so peers who
+  // were already connected (i.e. they joined the lobby BEFORE this player
+  // came back online) can fill in the missing dice / table / effect
+  // configs in their local cache. Without this, the scenario
+  //   1. Both players disconnect mid-game.
+  //   2. Player A reconnects first \u2014 lobbyData.players at that point
+  //      does not include Player B, so A's `game_reconnected` payload
+  //      has no entry for B in `availableItems` and `playerDiceConfigs`
+  //      is empty for B.
+  //   3. Player B reconnects \u2014 A only learns about this through
+  //      `player_reconnected`, which historically carried no item data.
+  //      A then renders B's dice with the default skin (wrong colour).
+  // leaves A's view permanently stale until the next game.
   const player = lobbyData.players.find(p => p.oderId === userId);
   const playerNickname = player?.user?.nickname || 'Player';
+
+  // Pull the just-reconnected player's items out of the already-built
+  // `availableItems` list (it's built from ALL currently-joined players
+  // so it already includes this player's gear).
+  const reconnectedPlayerItems = player
+    ? availableItems.filter((item) =>
+        item.id === player.user.equippedDiceId ||
+        item.id === player.user.equippedTableId ||
+        item.id === player.user.equippedEffectId
+      )
+    : [];
 
   broadcastToLobby(lobbyId, {
     type: 'player_reconnected',
     oderId: userId,
     nickname: playerNickname,
+    equippedDiceId: player?.user?.equippedDiceId ?? null,
+    equippedTableId: player?.user?.equippedTableId ?? null,
+    equippedEffectId: player?.user?.equippedEffectId ?? null,
+    availableItems: reconnectedPlayerItems,
   }, userId);
 
   // If another player was mid-throw when this player reconnected, replay
@@ -1436,29 +1464,35 @@ async function handleStartGame(userId: number): Promise<void> {
   }
 }
 
+// Rematch ("New Game") flow.
+//
+// Every player in the post-game lobby now has a "New Game" button (not
+// just the host); each press sends `restart_game`. The server tracks
+// which players have agreed in `lobby.restartVotes` and broadcasts a
+// running tally so each client can show progress ("1/2 ready"). When
+// every currently-joined player has agreed we auto-place the saved bet
+// for each of them (or skip betting entirely for no-bet lobbies) and
+// start the next round, with no manual betting UI in between. If any
+// player can't afford the bet, the vote is reset and an error is sent
+// to everyone so the modal can re-enable the button.
 async function handleRestartGame(userId: number): Promise<void> {
   const conn = connections.getConnection(userId);
   if (!conn?.lobbyId) {
     connections.send(userId, { type: 'error', message: 'Not in a lobby' });
     return;
   }
+  const lobbyId = conn.lobbyId;
 
-  const lobbyData = await lobby.getLobby(conn.lobbyId);
-  if (!lobbyData || lobbyData.hostId !== userId) {
-    connections.send(userId, { type: 'error', message: 'Only host can restart the game' });
+  const lobbyData = await lobby.getLobby(lobbyId);
+  if (!lobbyData) {
+    connections.send(userId, { type: 'error', message: 'Lobby not found' });
     return;
   }
 
-  // No-bet lobbies (e.g. the Yandex Games build) skip the betting UI on
-  // restart, matching what `handleStartGame` does on initial start.
-  // Without this, the host's "New Game" click on Yandex sent
-  // `show_betting_ui` to a client that never registered a handler for it
-  // and the game silently hung.
-  const playerIds = lobby.getLobbyPlayers(conn.lobbyId);
-  const skipBetting = lobby.isNoBetLobby(conn.lobbyId);
+  const playerIds = lobby.getLobbyPlayers(lobbyId);
 
   // Refuse to restart a multiplayer match with a single player. Without
-  // this guard, a host whose opponents pressed "Exit" on the post-game
+  // this guard, a player whose opponents pressed "Exit" on the post-game
   // result modal can keep pressing "New Game" and play with themselves.
   // The Yandex `MultiplayerLobbyGuard` already auto-leaves the lobby on
   // the first opponent drop client-side, but raw `restart_game` messages
@@ -1474,29 +1508,138 @@ async function handleRestartGame(userId: number): Promise<void> {
     return;
   }
 
-  if (!skipBetting && playerIds.length >= 2) {
-    BettingManager.initialize(conn.lobbyId, lobby.getLobbyBetAmount(conn.lobbyId));
-    logger.info('[BETTING] Initialized for restart', { lobbyId: conn.lobbyId, playerCount: playerIds.length });
-
-    for (const playerId of playerIds) {
-      const balance = await getUserPips(playerId);
-      connections.send(playerId, {
-        type: 'show_betting_ui',
-        minBet: 10,
-        balance
-      });
-    }
-
-    logger.info('[BETTING] Showing betting UI for restart', { lobbyId: conn.lobbyId });
+  // Reject votes from players who aren't actually in this lobby anymore
+  // (e.g. they leftLobby() mid-vote and somehow still managed to fire a
+  // delayed restart_game).
+  if (!playerIds.includes(userId)) {
+    connections.send(userId, { type: 'error', message: 'You are not in this lobby' });
     return;
   }
 
-  logger.info('restart_game starting without betting', {
-    lobbyId: conn.lobbyId,
-    playerCount: playerIds.length,
-    skipBetting,
+  lobby.addRestartVote(lobbyId, userId);
+  const votes = lobby.getRestartVotes(lobbyId).filter((id) => playerIds.includes(id));
+
+  // Tell everyone how the rematch vote stands so each client can update
+  // its post-game modal (button -> "Waiting for opponent…", show count).
+  broadcastToLobby(lobbyId, {
+    type: 'restart_vote_update',
+    votedPlayerIds: votes,
+    totalPlayers: playerIds.length,
   });
-  await startGameAfterBetting(conn.lobbyId);
+
+  logger.info('[REMATCH] restart_game vote', {
+    lobbyId,
+    voter: userId,
+    votes: votes.length,
+    total: playerIds.length,
+  });
+
+  // Still missing votes? Wait for the other player(s) to press New Game.
+  if (votes.length < playerIds.length) {
+    return;
+  }
+
+  // All current players agreed — time to deal with bets and (re)start.
+  const skipBetting = lobby.isNoBetLobby(lobbyId);
+  const betAmount = lobby.getLobbyBetAmount(lobbyId);
+
+  if (skipBetting || betAmount <= 0) {
+    logger.info('[REMATCH] starting without betting', {
+      lobbyId,
+      playerCount: playerIds.length,
+    });
+    lobby.clearRestartVotes(lobbyId);
+    await startGameAfterBetting(lobbyId);
+    return;
+  }
+
+  // Pre-flight pip check so we don't half-place bets and then bail out.
+  const balances = await Promise.all(
+    playerIds.map(async (id) => ({ id, pips: await getUserPips(id) }))
+  );
+  const broke = balances.filter((b) => b.pips < betAmount);
+  if (broke.length > 0) {
+    lobby.clearRestartVotes(lobbyId);
+    const brokeIds = broke.map((b) => b.id);
+    logger.info('[REMATCH] insufficient pips for rematch', {
+      lobbyId,
+      betAmount,
+      brokeIds,
+    });
+    broadcastToLobby(lobbyId, {
+      type: 'restart_failed',
+      reason: 'insufficient_pips',
+      brokePlayerIds: brokeIds,
+      betAmount,
+      message: 'Not enough pips for the current bet',
+    });
+    return;
+  }
+
+  // Auto-place + auto-confirm each player's bet at the saved bet amount.
+  // We skip the show_betting_ui round-trip entirely; the vote itself
+  // is the player's agreement to re-stake the previous bet.
+  BettingManager.initialize(lobbyId, betAmount);
+  const placed: number[] = [];
+  for (const playerId of playerIds) {
+    const place = await BettingManager.placeBet(playerId, betAmount, lobbyId);
+    if (!place.success) {
+      logger.error('[REMATCH] placeBet failed', undefined, {
+        lobbyId,
+        playerId,
+        error: place.error,
+      });
+      break;
+    }
+    const confirm = await BettingManager.confirmBet(playerId, lobbyId);
+    if (!confirm.success) {
+      logger.error('[REMATCH] confirmBet failed', undefined, {
+        lobbyId,
+        playerId,
+        error: confirm.error,
+      });
+      break;
+    }
+    placed.push(playerId);
+  }
+
+  // If any bet failed to confirm, refund the ones that did so nobody
+  // pays for a round that won't start, then report back to all players.
+  if (placed.length !== playerIds.length) {
+    for (const playerId of placed) {
+      await BettingManager.refundBet(playerId, lobbyId);
+    }
+    BettingManager.cleanup(lobbyId);
+    lobby.clearRestartVotes(lobbyId);
+    broadcastToLobby(lobbyId, {
+      type: 'restart_failed',
+      reason: 'bet_placement_failed',
+      message: 'Could not place bets for rematch',
+    });
+    return;
+  }
+
+  await BettingManager.activateBets(lobbyId);
+
+  // Push the new balance to each player so their HUD pip counter
+  // updates immediately (otherwise the next `getUserPips` query happens
+  // when the game ends, which would briefly show the pre-deduction
+  // balance).
+  for (const playerId of playerIds) {
+    const balance = await getUserPips(playerId);
+    connections.send(playerId, {
+      type: 'pips_updated',
+      pips: balance,
+    });
+  }
+
+  lobby.clearRestartVotes(lobbyId);
+  logger.info('[REMATCH] starting after auto-bet', {
+    lobbyId,
+    betAmount,
+    playerCount: playerIds.length,
+  });
+  await startGameAfterBetting(lobbyId);
 }
 
 // Helper function to start game (used by both handleStartGame and handleRestartGame)

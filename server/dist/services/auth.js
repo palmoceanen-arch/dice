@@ -58,6 +58,92 @@ export function parseInitDataUnsafe(initData) {
         return null;
     }
 }
+function base64UrlToBuffer(input) {
+    const normalized = input.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+    return Buffer.from(padded, 'base64');
+}
+export function validateYandexSignature(signedData) {
+    if (!config.yandex.appSecret) {
+        console.error('YANDEX_APP_SECRET not configured');
+        return null;
+    }
+    if (!signedData || typeof signedData !== 'string') {
+        return null;
+    }
+    const parts = signedData.split('.');
+    if (parts.length !== 2) {
+        console.error('Invalid Yandex signature format (expected sig.payload)');
+        return null;
+    }
+    const [sigB64, payloadB64] = parts;
+    try {
+        const hmacKey = Buffer.from(config.yandex.appSecret, 'utf-8');
+        const payloadRaw = base64UrlToBuffer(payloadB64);
+        const expectedSig = crypto.createHmac('sha256', hmacKey).update(payloadRaw).digest();
+        const providedSig = base64UrlToBuffer(sigB64);
+        if (expectedSig.length !== providedSig.length || !crypto.timingSafeEqual(expectedSig, providedSig)) {
+            console.error('Yandex signature mismatch');
+            return null;
+        }
+        const payload = JSON.parse(payloadRaw.toString('utf-8'));
+        const uuid = payload?.data?.id || payload?.data?.uniqueID;
+        if (!uuid || typeof uuid !== 'string') {
+            console.error('Yandex payload missing data.id');
+            return null;
+        }
+        return {
+            uuid,
+            issuedAt: payload.issuedAt,
+            publicName: payload.data?.publicName,
+            avatarIdHash: payload.data?.avatarIdHash,
+            lang: payload.data?.lang,
+        };
+    }
+    catch (err) {
+        console.error('Failed to validate Yandex signature:', err);
+        return null;
+    }
+}
+// For development / unsigned-auth path - extract uuid from the payload without
+// verifying the HMAC. The Yandex SDK can return an unsigned player object
+// where `id` is the player uuid; we accept either shape so the local
+// `npm run dev` flow works without YANDEX_APP_SECRET configured.
+export function parseYandexPlayerUnsafe(signedData, playerInfo) {
+    try {
+        if (signedData && signedData.includes('.')) {
+            // Yandex format is `<sig>.<payload>` so the JSON payload is the SECOND half.
+            const parts = signedData.split('.');
+            const payloadB64 = parts.length === 2 ? parts[1] : parts[0];
+            const payload = JSON.parse(base64UrlToBuffer(payloadB64).toString('utf-8'));
+            const uuid = payload?.data?.id || payload?.data?.uniqueID;
+            if (uuid) {
+                return {
+                    uuid,
+                    publicName: playerInfo?.publicName || payload.data?.publicName,
+                    avatarUrlSmall: playerInfo?.avatarUrlSmall,
+                    avatarUrlMedium: playerInfo?.avatarUrlMedium,
+                    avatarUrlLarge: playerInfo?.avatarUrlLarge,
+                    lang: playerInfo?.lang || payload.data?.lang,
+                };
+            }
+        }
+        if (playerInfo?.uuid) {
+            return {
+                uuid: playerInfo.uuid,
+                publicName: playerInfo.publicName,
+                avatarUrlSmall: playerInfo.avatarUrlSmall,
+                avatarUrlMedium: playerInfo.avatarUrlMedium,
+                avatarUrlLarge: playerInfo.avatarUrlLarge,
+                lang: playerInfo.lang,
+            };
+        }
+        return null;
+    }
+    catch {
+        return null;
+    }
+}
 // Extract start_param (referral code) from initData
 // Supports both 'start_param' (for regular bots) and 'start_param' from Web App
 export function extractStartParam(initData) {

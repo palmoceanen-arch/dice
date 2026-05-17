@@ -9,6 +9,9 @@ export declare const config: {
     bot: {
         token: string;
     };
+    yandex: {
+        appSecret: string;
+    };
     server: {
         port: number;
         wsPort: number;

@@ -278,6 +278,10 @@ export async function leaveLobby(lobbyId: string, userId: number): Promise<Leave
   if (state) {
     state.players.delete(userId);
     state.votes.delete(userId);
+    // Drop this player's rematch vote (if any). Otherwise an opponent
+    // pressing "New Game" after we left would trip the "all players
+    // agreed" check with our stale vote still counted.
+    removeRestartVote(lobbyId, userId);
     remainingPlayers = Array.from(state.players);
 
     if (state.players.size === 0) {
@@ -515,6 +519,38 @@ export async function respondToInvitation(invitationId: number, accept: boolean)
 export function getLobbyPlayers(lobbyId: string): number[] {
   const state = activeLobbies.get(lobbyId);
   return state ? Array.from(state.players) : [];
+}
+
+// Rematch ("New Game") vote state per lobby. The post-game UI lets every
+// player vote on a rematch; the server only restarts when all currently
+// joined players have agreed. The vote set is cleared whenever a new
+// round actually starts (`clearRestartVotes`), a player leaves the
+// lobby, or the lobby itself closes.
+const restartVotes = new Map<string, Set<number>>();
+
+export function addRestartVote(lobbyId: string, userId: number): void {
+  let set = restartVotes.get(lobbyId);
+  if (!set) {
+    set = new Set<number>();
+    restartVotes.set(lobbyId, set);
+  }
+  set.add(userId);
+}
+
+export function removeRestartVote(lobbyId: string, userId: number): void {
+  const set = restartVotes.get(lobbyId);
+  if (!set) return;
+  set.delete(userId);
+  if (set.size === 0) restartVotes.delete(lobbyId);
+}
+
+export function getRestartVotes(lobbyId: string): number[] {
+  const set = restartVotes.get(lobbyId);
+  return set ? Array.from(set) : [];
+}
+
+export function clearRestartVotes(lobbyId: string): void {
+  restartVotes.delete(lobbyId);
 }
 
 export function setPlayerScreenSize(lobbyId: string, userId: number, width: number, height: number): void {

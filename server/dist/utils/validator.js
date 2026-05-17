@@ -8,15 +8,53 @@ const GameModeSchema = z.enum(['free_roll', 'street_craps', 'mexico', 'greedy_pi
 const SlotSchema = z.enum(['dice', 'table', 'effect']);
 // Sanitize string - remove potential XSS
 const SafeString = z.string().transform(s => s.replace(/[<>'"&]/g, '').trim());
+// Allow any Unicode letter (including Cyrillic, CJK, etc.) and digit, plus
+// underscore. Matches the sanitizer in users.ts → generateNickname() which
+// strips everything outside `\p{L}\p{N}` before assigning a default name; if
+// we only accepted ASCII here a user whose default is e.g. "ПавелСлонов"
+// could not edit their own nickname.
 const NicknameSchema = SafeString
     .refine(s => s.length >= 3 && s.length <= 32, 'Nickname must be 3-32 characters')
-    .refine(s => /^[a-zA-Z0-9_]+$/.test(s), 'Nickname can only contain letters, numbers, and underscores');
+    .refine(s => /^[\p{L}\p{N}_]+$/u.test(s), 'Nickname can only contain letters, numbers, and underscores');
 const UsernameSearchSchema = SafeString
     .refine(s => s.length >= 1 && s.length <= 64, 'Username must be 1-64 characters');
 // === Message schemas ===
-const AuthMessageSchema = z.object({
+// Telegram path: `initData` is the Telegram Mini App init payload.
+// Yandex path: `platform: 'yandex'` plus `signedData` (HMAC payload from
+// `ysdk.getPlayer({signed:true})`) and optional `playerInfo`. The dispatch
+// in handlers.ts picks the right path based on `platform`; this schema
+// must accept either shape, otherwise valid Yandex auth messages are
+// rejected before they reach the dispatcher.
+const YandexAuthPlayerInfoSchema = z.object({
+    uuid: z.string().min(1).max(128).optional(),
+    publicName: z.string().max(256).optional(),
+    avatarUrlSmall: z.string().max(2048).optional(),
+    avatarUrlMedium: z.string().max(2048).optional(),
+    avatarUrlLarge: z.string().max(2048).optional(),
+    lang: z.string().max(16).optional(),
+});
+const AuthMessageSchema = z
+    .object({
     type: z.literal('auth'),
-    initData: z.string().min(1).max(4096),
+    platform: z.enum(['telegram', 'yandex']).optional(),
+    initData: z.string().min(1).max(4096).optional(),
+    signedData: z.string().min(1).max(8192).nullable().optional(),
+    playerInfo: YandexAuthPlayerInfoSchema.nullable().optional(),
+})
+    .superRefine((data, ctx) => {
+    if (data.platform === 'yandex') {
+        // Yandex auth doesn't require initData; signedData may be null for
+        // unauthorized guests, the server falls back to a per-device uuid in
+        // dev / rejects in prod.
+        return;
+    }
+    if (!data.initData) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['initData'],
+            message: 'Required',
+        });
+    }
 });
 const SetNicknameSchema = z.object({
     type: z.literal('set_nickname'),
@@ -63,11 +101,27 @@ const GetReferralStatsSchema = z.object({
 const GetReferralListSchema = z.object({
     type: z.literal('get_referral_list'),
 });
+// Bet amounts allowed in Yandex create-lobby and matchmaking flows.
+const MmBetAmountSchema = z
+    .number()
+    .int()
+    .refine((n) => [0, 10, 50, 100, 500].includes(n), {
+    message: 'Bet amount must be one of 0 / 10 / 50 / 100 / 500',
+});
 const CreateLobbySchema = z.object({
     type: z.literal('create_lobby'),
     gameMode: GameModeSchema,
     screenWidth: z.number().int().positive().max(10000).optional(),
     screenHeight: z.number().int().positive().max(10000).optional(),
+    // Per-player stake in pips. `0` is treated as a no-bet lobby (the
+    // server skips the in-round BettingManager flow and awards a fixed
+    // pip prize to the winner(s)). The set of allowed amounts is
+    // `MmBetAmountSchema` — kept in lockstep with the matchmaking queue
+    // and the UI chip buttons.
+    bet: MmBetAmountSchema.optional(),
+    // Legacy flag for Telegram callsites that haven't been migrated. New
+    // code should use `bet: 0` instead. Defaults to false.
+    noBet: z.boolean().optional(),
 });
 const JoinLobbySchema = z.object({
     type: z.literal('join_lobby'),
@@ -247,6 +301,29 @@ const SaveCustomDiceSchema = z.object({
         bevelRadius: z.number().min(0).max(0.2),
     }),
 });
+// Lets a client (currently only the Yandex Games build) push the dice /
+// table / effect configs it picked from its local Cloud Save to the
+// server, so the server can broadcast them to the *other* players in a
+// multiplayer match. Without this, the server only knows about the
+// equipped item IDs in the database (which never change on Yandex —
+// every Yandex user is stuck on `classic_white` — so opponents would
+// always see white dice regardless of what each player picked locally).
+//
+// `code` is a short identifier (e.g. `classic_red`, `yandex_custom`)
+// used purely for telemetry / debugging on the server side — the
+// authoritative payload is `config`. Each slot is optional so the
+// client can clear an override by sending `dice: null` etc.
+const PlayerItemSlotSchema = z.object({
+    code: z.string().min(1).max(64),
+    name: z.string().min(1).max(128),
+    config: z.record(z.unknown()).nullable(),
+}).nullable();
+const SetPlayerItemsSchema = z.object({
+    type: z.literal('set_player_items'),
+    dice: PlayerItemSlotSchema.optional(),
+    table: PlayerItemSlotSchema.optional(),
+    effect: PlayerItemSlotSchema.optional(),
+});
 // === Betting schemas ===
 const PlaceBetSchema = z.object({
     type: z.literal('place_bet'),
@@ -257,6 +334,28 @@ const ConfirmBetSchema = z.object({
 });
 const CancelBetSchema = z.object({
     type: z.literal('cancel_bet'),
+});
+// === Matchmaking schemas ===
+const MmJoinQueueSchema = z.object({
+    type: z.literal('mm_join_queue'),
+    mode: z.enum(['duel', 'any']),
+    betAmount: MmBetAmountSchema,
+    // Reserved for future "let me pick the mode" UI. The default
+    // `poker_dice` (Palmo's Dice) is enforced server-side if omitted.
+    gameMode: GameModeSchema.optional(),
+});
+const MmLeaveQueueSchema = z.object({
+    type: z.literal('mm_leave_queue'),
+});
+const MmReadySchema = z.object({
+    type: z.literal('mm_ready'),
+});
+const SyncYandexPipsSchema = z.object({
+    type: z.literal('sync_yandex_pips'),
+    pips: z.number().int().min(0).max(1000000000),
+});
+const GetPlayerStatsSchema = z.object({
+    type: z.literal('get_player_stats'),
 });
 // === Client ping (for connection check) ===
 const ClientPingSchema = z.object({
@@ -305,9 +404,15 @@ const MessageSchemas = {
     get_boost_states: GetBoostStatesSchema,
     admin_gift: AdminGiftSchema,
     save_custom_dice: SaveCustomDiceSchema,
+    set_player_items: SetPlayerItemsSchema,
     place_bet: PlaceBetSchema,
     confirm_bet: ConfirmBetSchema,
     cancel_bet: CancelBetSchema,
+    mm_join_queue: MmJoinQueueSchema,
+    mm_leave_queue: MmLeaveQueueSchema,
+    mm_ready: MmReadySchema,
+    sync_yandex_pips: SyncYandexPipsSchema,
+    get_player_stats: GetPlayerStatsSchema,
     _client_ping: ClientPingSchema,
 };
 /**

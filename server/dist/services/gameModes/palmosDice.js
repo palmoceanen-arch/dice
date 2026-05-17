@@ -217,9 +217,37 @@ export const PalmosDiceMode = {
         round.rollsUsed++;
         const hand = evaluateHand(diceValues);
         const canReroll = round.rollsLeft > 0;
+        // If this was the 3rd roll (no rolls left), automatically take the points
+        if (!canReroll) {
+            const currentScore = palmosState.scores.get(playerId) || 0;
+            const newScore = currentScore + hand.points;
+            palmosState.scores.set(playerId, newScore);
+            // Check if game is over
+            const gameOver = newScore >= palmosState.targetScore;
+            // End turn, move to next player
+            palmosState.currentRound = null;
+            const nextPlayer = getNextPlayer(state);
+            state.currentTurn = nextPlayer;
+            state.turnIndex = state.playerOrder.indexOf(nextPlayer);
+            return {
+                outcome: 'result',
+                message: `${hand.name}. +${hand.points} очков. Счёт: ${newScore}`,
+                nextTurn: nextPlayer,
+                gameOver,
+                data: {
+                    dice: diceValues,
+                    hand: hand.name,
+                    points: hand.points,
+                    newScore,
+                    scores: Object.fromEntries(palmosState.scores),
+                    autoTake: true, // Flag to indicate automatic take after 3rd roll
+                },
+            };
+        }
+        // Still have rolls left - player can choose
         return {
             outcome: 'roll',
-            message: `${hand.name} (${hand.points} очков). ${canReroll ? 'Взять или перебросить?' : 'Последний бросок! Нужно взять.'}`,
+            message: `${hand.name} (${hand.points} очков). Взять или перебросить?`,
             nextTurn: playerId, // Same player continues
             gameOver: false,
             data: {

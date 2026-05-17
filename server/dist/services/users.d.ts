@@ -1,5 +1,7 @@
-import type { User, TelegramUser, Item } from '../types/index.js';
+import type { User, TelegramUser, YandexPlayer, Item } from '../types/index.js';
 export declare function findOrCreateUser(telegramUser: TelegramUser, referralCode?: string | null): Promise<User>;
+export declare function findOrCreateYandexUser(player: YandexPlayer): Promise<User>;
+export declare function getUserByYandexId(yandexId: string): Promise<User | null>;
 export declare function getUserById(id: number): Promise<User | null>;
 export declare function getUserByTelegramId(telegramId: number): Promise<User | null>;
 export declare function getUserByUsername(username: string): Promise<User | null>;
