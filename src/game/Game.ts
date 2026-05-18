@@ -2900,47 +2900,89 @@ export class Game {
     return this.dice.length;
   }
   
-  // Restore dice from last frame (for Palmo's Dice reconnect)
-  public restoreDiceFromFrame(frame: any) {
+  // Restore dice from last frame (for Palmo's Dice reconnect).
+  //
+  // `frame` is whatever the server stored for the most recent
+  // `throw_frame` from the relevant shooter. The wire shape is
+  //   { diceFrames: [{ position: [x,y,z], quaternion: [qx,qy,qz,qw], time }], time }
+  // (see DiceSync.startRecordingStream). Older code paths sometimes
+  // passed a `{ dice: [{x,y,z,qx,qy,qz,qw}] }` shape, so we accept
+  // both — preferring `diceFrames` when present.
+  //
+  // When `shooterId` is provided we also re-skin the dice with the
+  // shooter's config before restoring positions, so a reconnecting
+  // spectator sees the right dice colours/materials, not the local
+  // player's own skin.
+  public restoreDiceFromFrame(frame: any, shooterId?: number) {
     (window as any).debugLog?.('GAME', `Restoring dice from last frame, frame:`, frame);
-    
-    if (!frame || !frame.dice || frame.dice.length !== this.dice.length) {
-      (window as any).debugLog?.('GAME', `Invalid frame data: hasFrame=${!!frame}, hasDice=${!!frame?.dice}, frameLength=${frame?.dice?.length}, diceLength=${this.dice.length}`);
+
+    if (!frame) {
+      (window as any).debugLog?.('GAME', 'restoreDiceFromFrame: missing frame');
       return;
     }
-    
-    (window as any).debugLog?.('GAME', `Frame valid, restoring ${frame.dice.length} dice`);
-    
+
+    const frames: any[] | undefined = Array.isArray(frame.diceFrames)
+      ? frame.diceFrames
+      : Array.isArray(frame.dice)
+      ? frame.dice
+      : undefined;
+
+    if (!frames || frames.length !== this.dice.length) {
+      (window as any).debugLog?.(
+        'GAME',
+        `Invalid frame data: hasFrames=${!!frames}, frameLength=${frames?.length}, diceLength=${this.dice.length}`,
+      );
+      return;
+    }
+
+    (window as any).debugLog?.('GAME', `Frame valid, restoring ${frames.length} dice (shooterId=${shooterId})`);
+
+    // If we know whose throw this was, swap in their dice skin first
+    // so the spectator sees the correct colours after reconnect.
+    if (shooterId !== undefined) {
+      const config = this.gameSync.getPlayerDiceConfig(shooterId);
+      if (config) {
+        this.dice.forEach((d) =>
+          d.updateConfig(config, this.graphicsSettings.diceBevelSegments),
+        );
+        (window as any).debugLog?.('GAME', `Applied shooter ${shooterId} config to dice`);
+      } else {
+        (window as any).debugLog?.('GAME', `No config available for shooter ${shooterId}, keeping current skin`);
+      }
+    }
+
     // Disable hand box physics
     this.handBoxWalls.forEach(w => w.collisionResponse = false);
     if (this.handBoxFloor) this.handBoxFloor.collisionResponse = false;
-    
-    // Restore each die from frame data
-    frame.dice.forEach((diceData: any, i: number) => {
+
+    // Restore each die from frame data, supporting both wire shapes.
+    frames.forEach((diceData: any, i: number) => {
       const dice = this.dice[i];
-      
+
       // Set dice to KINEMATIC (frozen on table)
       dice.body.type = CANNON.Body.KINEMATIC;
       dice.body.collisionResponse = true;
-      
-      // Restore position
-      dice.setPosition(diceData.x, diceData.y, diceData.z);
-      
-      // Restore rotation
-      dice.body.quaternion.set(
-        diceData.qx,
-        diceData.qy,
-        diceData.qz,
-        diceData.qw
-      );
-      
+
+      // Pull position from either `position: [x,y,z]` or `{x,y,z}`.
+      const px = Array.isArray(diceData.position) ? diceData.position[0] : diceData.x;
+      const py = Array.isArray(diceData.position) ? diceData.position[1] : diceData.y;
+      const pz = Array.isArray(diceData.position) ? diceData.position[2] : diceData.z;
+      dice.setPosition(px, py, pz);
+
+      // Pull quaternion from either `quaternion: [qx,qy,qz,qw]` or `{qx,qy,qz,qw}`.
+      const qx = Array.isArray(diceData.quaternion) ? diceData.quaternion[0] : diceData.qx;
+      const qy = Array.isArray(diceData.quaternion) ? diceData.quaternion[1] : diceData.qy;
+      const qz = Array.isArray(diceData.quaternion) ? diceData.quaternion[2] : diceData.qz;
+      const qw = Array.isArray(diceData.quaternion) ? diceData.quaternion[3] : diceData.qw;
+      dice.body.quaternion.set(qx, qy, qz, qw);
+
       // Stop all motion
       dice.setVelocity(0, 0, 0);
       dice.setAngularVelocity(0, 0, 0);
     });
-    
+
     this.diceInHand = false;
-    
+
     (window as any).debugLog?.('GAME', `Dice restored from frame, diceInHand=${this.diceInHand}`);
   }
   
@@ -3302,7 +3344,21 @@ export class Game {
       (window as any).debugLog?.('PALMOS', 'Dice in hand, ignoring click');
       return; // Can't select dice in hand
     }
-    
+
+    // Block selection while dice are still moving (e.g. mid-throw replay
+    // on the spectator side, or right after our own throw before the
+    // physics has finished settling). Otherwise the outline pops onto
+    // a bouncing die for a frame and immediately gets wiped by the next
+    // `clearDiceSelection`, which is the gold-flicker users complained
+    // about.
+    const allSettled = this.dice.every(
+      d => d.body.sleepState === CANNON.Body.SLEEPING || d.body.type !== CANNON.Body.DYNAMIC,
+    );
+    if (!allSettled) {
+      (window as any).debugLog?.('PALMOS', 'Dice not settled, ignoring click');
+      return;
+    }
+
     // Calculate mouse position in normalized device coordinates (-1 to +1)
     const rect = this.canvas.getBoundingClientRect();
     this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
@@ -3394,24 +3450,16 @@ export class Game {
     return this.selectedDiceForReroll.size > 0;
   }
   
-  // Show which dice another player selected for reroll (visual feedback)
+  // Show which dice another player selected for reroll.
+  //
+  // We deliberately do NOT light up those dice on the remote viewer.
+  // The gold outline used to flash on for a frame or two and then get
+  // wiped by the very next `throw_start` handler (which calls
+  // `clearDiceSelection`), which is the "outline flicker right before
+  // the throw" users have been complaining about. The text
+  // notification is enough to communicate the shooter's intent.
   public showOtherPlayerDiceSelection(selectedIndices: number[]) {
-    (window as any).debugLog?.('PALMOS', `Showing other player's selection: [${selectedIndices.join(',')}]`);
-
-    // Clear any existing selection first
-    this.clearDiceSelection();
-
-    // Highlight only the dice the other player picked. We do NOT update
-    // `selectedDiceForReroll` because that set tracks the local player's
-    // own selection; the remote highlight is purely visual and is wiped
-    // by the next `throw_start` / `clearDiceSelection`.
-    selectedIndices.forEach(index => {
-      if (index >= 0 && index < this.dice.length) {
-        this.setDiceHighlight(index, true);
-      }
-    });
-    
-    // Show notification
+    (window as any).debugLog?.('PALMOS', `Showing other player's selection (notify only): [${selectedIndices.join(',')}]`);
     this.showNotification(`Выбрано кубиков для переброса: ${selectedIndices.length}`);
   }
   

@@ -343,11 +343,25 @@ export class GameSync {
             this.game.onGameStarted(true);
           }
         } else {
-          // Not my turn - teleport dice to current player's position
-          // They will be on the table waiting for their action
-          (window as any).debugLog?.('GAME', `Palmo's Dice reconnect: Not my turn, teleporting to player ${data.currentTurn}`);
-          this.game.teleportDiceToNextPlayer(data.currentTurn);
-          
+          // Not my turn. Two sub-cases:
+          //   (a) The current shooter already threw and is sitting on
+          //       a reroll-selection screen. The server includes the
+          //       shooter's last `throw_frame` as `data.lastFrame` and
+          //       `data.currentRound` describes the dice on the table.
+          //       Restore those positions so we see the dice on the
+          //       table instead of an empty board.
+          //   (b) No throw has happened yet this round (or the shooter
+          //       is between rounds). Fall back to the existing
+          //       "teleport dice to other player's hand" behaviour;
+          //       the next `throw_start` replay will reposition them.
+          if (data.lastFrame && data.currentRound) {
+            (window as any).debugLog?.('GAME', `Palmo's Dice reconnect: Not my turn, restoring shooter ${data.currentRound.playerId} dice from last frame`);
+            this.game.restoreDiceFromFrame(data.lastFrame, data.currentRound.playerId);
+          } else {
+            (window as any).debugLog?.('GAME', `Palmo's Dice reconnect: Not my turn, teleporting to player ${data.currentTurn}`);
+            this.game.teleportDiceToNextPlayer(data.currentTurn);
+          }
+
           // If a throw starts, we'll automatically join the replay via throw_start event
         }
       } else {
