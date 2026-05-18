@@ -1190,16 +1190,30 @@ async function handleReconnectGame(userId: number, lobbyId: string): Promise<voi
   
   // For Palmo's Dice, include current round state (dice on table)
   const currentRound = modeState.currentRound || null;
-  
-  // Get last frame for this player (if they were in middle of a throw)
+
+  // Get the lastFrame that reflects the dice currently visible on the
+  // table. After throw_end the in-flight frame stream stops and the
+  // shooter's last throw_frame entry stays in `lastFrameStorage` —
+  // approximating the settled positions until the next throw_start
+  // overwrites it. We look up by `gameState.currentTurn` (whose dice
+  // are on the table right now) so a reconnecting spectator sees the
+  // shooter's dice during their reroll-selection phase, not just an
+  // empty table. Falls back to the reconnecting user's own frame (for
+  // a self mid-throw reconnect when they ARE the current turn — same
+  // lookup result, kept explicit for clarity).
   const lobbyFrames = lastFrameStorage.get(lobbyId);
-  const lastFrame = lobbyFrames?.get(userId) || null;
-  
+  const currentTurnUserId = gameState.currentTurn;
+  const lastFrame =
+    (currentTurnUserId != null ? lobbyFrames?.get(currentTurnUserId) : null) ||
+    lobbyFrames?.get(userId) ||
+    null;
+
   console.log(`[Reconnect] User ${userId} - Palmo's Dice state:`, {
     hasCurrentRound: !!currentRound,
     currentRoundPlayerId: (currentRound as any)?.playerId,
+    currentTurn: currentTurnUserId,
     hasLastFrame: !!lastFrame,
-    lastFrameDiceCount: lastFrame?.dice?.length
+    lastFrameDiceCount: lastFrame?.diceFrames?.length ?? lastFrame?.dice?.length,
   });
   
   connections.send(userId, {
